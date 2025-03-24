@@ -195,3 +195,28 @@ Contract addresses are saved in the deployments folder
 Waiting for the Template to be set on the Rollup Creator
 Template is set on the Rollup Creator
 maharajababu nitro-contracts % 
+
+
+
+
+npx hardhat run scripts/createEthRollup.ts --network arbSepolia
+Calling createRollup to generate a new rollup ...
+Congratulations! 🎉🎉🎉 All DONE! Here's your addresses:
+RollupProxy Contract created at address: 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7
+Wait a minute before starting the contract verification
+Attempting to verify Rollup contract at address 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7...
+Successfully submitted source code for contract
+src/rollup/RollupProxy.sol:RollupProxy at 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7
+for verification on the block explorer. Waiting for verification result...
+
+Contract RollupProxy is already verified.
+Inbox (proxy) Contract created at address: 0xb1264fCe5a3fc1De7Ca0679aF510b2c0Abd48859
+Outbox (proxy) Contract created at address: 0x78e43E0c3669A8C05eB306043CeE6aAEFb357b55
+rollupEventInbox (proxy) Contract created at address: 0xcc2204a5b669930c36B4412863d21084EE9827b5
+challengeManager (proxy) Contract created at address: 0xB1346A84D36B2D75783e0Fd39EE058fBe7CC0CD3
+AdminProxy Contract created at address: 0x3832b96efA351FBA4A189D228a21Dd8f7C74c3cE
+SequencerInbox (proxy) created at address: 0xa2c79BdB61D127260eC18DdA980CeFE5c2941eE7
+Bridge (proxy) Contract created at address: 0xbBF241C332Bd5b319abDb4dDCBA83e4E65358539
+ValidatorUtils Contract created at address: 0x8f0D0B2D5b77ABF02742f8128289e3dCCD5DF019
+ValidatorWalletCreator Contract created at address: 0x8bb7f64cfa03A9f24172F13dBd5aD5653D78E21e
+All deployed at block number: 135396789
