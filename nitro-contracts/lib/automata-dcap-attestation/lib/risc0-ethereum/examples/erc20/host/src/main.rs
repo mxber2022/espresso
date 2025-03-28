@@ -13,17 +13,13 @@
 // limitations under the License.
 
 use alloy_primitives::{address, Address};
-use alloy_sol_types::{sol, SolCall, SolType};
+use alloy_sol_types::{sol, SolCall, SolValue};
 use anyhow::{Context, Result};
 use clap::Parser;
 use erc20_methods::ERC20_GUEST_ELF;
-use risc0_steel::{
-    ethereum::{EthEvmEnv, ETH_SEPOLIA_CHAIN_SPEC},
-    Commitment, Contract,
-};
+use risc0_steel::{config::ETH_SEPOLIA_CHAIN_SPEC, ethereum::EthEvmEnv, Contract, EvmBlockHeader};
 use risc0_zkvm::{default_executor, ExecutorEnv};
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
 sol! {
     /// ERC-20 balance function signature.
@@ -49,11 +45,10 @@ const CALLER: Address = address!("f08A50178dfcDe18524640EA6618a1f965821715");
 struct Args {
     /// URL of the RPC endpoint
     #[arg(short, long, env = "RPC_URL")]
-    rpc_url: Url,
+    rpc_url: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -61,42 +56,43 @@ async fn main() -> Result<()> {
     // Parse the command line arguments.
     let args = Args::parse();
 
-    // Create an EVM environment from an RPC endpoint defaulting to the latest block.
-    let mut env = EthEvmEnv::builder().rpc(args.rpc_url).build().await?;
+    // Create an EVM environment from an RPC endpoint and a block number. If no block number is
+    // provided, the latest block is used.
+    let mut env = EthEvmEnv::from_rpc(&args.rpc_url, None)?;
     //  The `with_chain_spec` method is used to specify the chain configuration.
     env = env.with_chain_spec(&ETH_SEPOLIA_CHAIN_SPEC);
+
+    let commitment = env.block_commitment();
 
     // Preflight the call to prepare the input that is required to execute the function in
     // the guest without RPC access. It also returns the result of the call.
     let mut contract = Contract::preflight(CONTRACT, &mut env);
-    let returns = contract.call_builder(&CALL).from(CALLER).call().await?;
+    let returns = contract.call_builder(&CALL).from(CALLER).call()?;
     println!(
-        "Call {} Function by {:#} on {:#} returns: {}",
+        "For block {} `{}` returns: {}",
+        env.header().number(),
         IERC20::balanceOfCall::SIGNATURE,
-        CALLER,
-        CONTRACT,
         returns._0
     );
 
     // Finally, construct the input from the environment.
-    let input = env.into_input().await?;
+    let input = env.into_input()?;
 
-    println!("Running the guest with the constructed input...");
+    println!("Running the guest with the constructed input:");
     let session_info = {
         let env = ExecutorEnv::builder()
             .write(&input)
             .unwrap()
             .build()
-            .context("failed to build executor env")?;
+            .context("Failed to build exec env")?;
         let exec = default_executor();
         exec.execute(env, ERC20_GUEST_ELF)
             .context("failed to run executor")?
     };
 
-    // The journal should be the ABI encoded commitment.
-    let commitment = Commitment::abi_decode(session_info.journal.as_ref(), true)
-        .context("failed to decode journal")?;
-    println!("{:?}", commitment);
+    // The commitment in the journal should match.
+    let bytes = session_info.journal.as_ref();
+    assert!(bytes.starts_with(&commitment.abi_encode()));
 
     Ok(())
 }

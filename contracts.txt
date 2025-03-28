@@ -1,0 +1,16 @@
+Congratulations! 🎉🎉🎉 All DONE! Here's your addresses:
+RollupProxy Contract created at address: 0x7A6074218a171e57d1198386f9500EC9b0f1e684
+Attempting to verify Rollup contract at address 0x7A6074218a171e57d1198386f9500EC9b0f1e684
+src/rollup/RollupProxy.sol:RollupProxy at 0x7A6074218a171e57d1198386f9500EC9b0f1e684
+
+Contract RollupProxy is already verified.
+Inbox (proxy) Contract created at address: 0xffC822D13e3743fff3fAFE9FC49eC82d6FF9269C
+Outbox (proxy) Contract created at address: 0x00603B7D7B010289C38B42645Aaca34AB2D429C7
+rollupEventInbox (proxy) Contract created at address: 0x340CF68F829d3a4B85958860AB36751c124592f1
+challengeManager (proxy) Contract created at address: 0xA5996Cd20C3D6B1D947Bec3E6908B35f35A43592
+AdminProxy Contract created at address: 0xA917cAdF349ca58621f9499A7f7281532C9108a8
+SequencerInbox (proxy) created at address: 0x09Af9f124E6597Fd6507fd37759E9Cd7795CCAd3
+Bridge (proxy) Contract created at address: 0xf2061896724Da22e583C1918b3d1054035157a08
+ValidatorUtils Contract created at address: 0xDcC0e65A0C8E9C9521f6E9eC3614963e4BD26F57
+ValidatorWalletCreator Contract created at address: 0x0e55bE49D3FEF17CFC1D791731Fd608A9499C8CF
+All deployed at block number: 136646779

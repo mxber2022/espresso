@@ -1,10 +1,8 @@
 [profile.default]
-src = "contracts/src"
+src = "contracts"
 out = "out"
 libs = ["../../lib", "../../contracts/src"]
-test = "contracts/test"
-script = "contracts/script"
-evm_version = 'cancun'
+test = "tests"
+ffi = true
 
-[rpc_endpoints]
-mainnet = "https://ethereum-rpc.publicnode.com"
+# See more config options https://github.com/foundry-rs/foundry/tree/master/config

@@ -15,176 +15,218 @@
 #![cfg_attr(not(doctest), doc = include_str!("../README.md"))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-/// Re-export of [alloy], provided to ensure that the correct version of the types used in the
-/// public API are available in case multiple versions of [alloy] are in use.
-///
-/// Because [alloy] is a v0.x crate, it is not covered under the semver policy of this crate.
-#[cfg(feature = "host")]
-pub use alloy;
+use alloy_primitives::{
+    b256, keccak256, Address, BlockNumber, Bytes, Sealable, Sealed, TxNumber, B256, U256,
+};
+use alloy_rlp_derive::{RlpDecodable, RlpEncodable};
 
-use ::serde::{Deserialize, Serialize};
-use alloy_primitives::{uint, BlockNumber, Sealable, Sealed, B256, U256};
-use alloy_sol_types::SolValue;
-use config::ChainSpec;
-use revm::primitives::{BlockEnv, CfgEnvWithHandlerCfg, SpecId};
+use revm::primitives::{BlockEnv, CfgEnvWithHandlerCfg, HashMap, SpecId};
+use serde::{Deserialize, Serialize};
+use std::{fmt::Debug, rc::Rc};
 
-pub mod beacon;
-mod block;
 pub mod config;
 mod contract;
 pub mod ethereum;
-#[cfg(feature = "unstable-history")]
-pub mod history;
-#[cfg(not(feature = "unstable-history"))]
-mod history;
 #[cfg(feature = "host")]
 pub mod host;
-mod merkle;
 mod mpt;
-pub mod serde;
-mod state;
 
-pub use beacon::BeaconInput;
-pub use block::BlockInput;
 pub use contract::{CallBuilder, Contract};
 pub use mpt::MerkleTrie;
-pub use state::{StateAccount, StateDb};
 
-#[cfg(feature = "unstable-history")]
-pub use history::HistoryInput;
-#[cfg(not(feature = "unstable-history"))]
-pub(crate) use history::HistoryInput;
-
-/// The serializable input to derive and validate an [EvmEnv] from.
-#[non_exhaustive]
-#[derive(Clone, Serialize, Deserialize)]
-pub enum EvmInput<H> {
-    /// Input committing to the corresponding execution block hash.
-    Block(BlockInput<H>),
-    /// Input committing to the corresponding Beacon Chain block root.
-    Beacon(BeaconInput<H>),
-    /// Input recursively committing to multiple Beacon Chain block root.
-    History(HistoryInput<H>),
+/// The serializable input to derive and validate a [EvmEnv].
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EvmInput<H> {
+    pub header: H,
+    pub state_trie: MerkleTrie,
+    pub storage_tries: Vec<MerkleTrie>,
+    pub contracts: Vec<Bytes>,
+    pub ancestors: Vec<H>,
 }
 
 impl<H: EvmBlockHeader> EvmInput<H> {
     /// Converts the input into a [EvmEnv] for execution.
     ///
     /// This method verifies that the state matches the state root in the header and panics if not.
-    #[inline]
     pub fn into_env(self) -> GuestEvmEnv<H> {
-        match self {
-            EvmInput::Block(input) => input.into_env(),
-            EvmInput::Beacon(input) => input.into_env(),
-            EvmInput::History(input) => input.into_env(),
+        // verify that the state root matches the state trie
+        let state_root = self.state_trie.hash_slow();
+        assert_eq!(self.header.state_root(), &state_root, "State root mismatch");
+
+        // seal the header to compute its block hash
+        let header = self.header.seal_slow();
+
+        // validate that ancestor headers form a valid chain
+        let mut block_hashes = HashMap::with_capacity(self.ancestors.len() + 1);
+        block_hashes.insert(header.number(), header.seal());
+
+        let mut previous_header = header.inner();
+        for ancestor in &self.ancestors {
+            let ancestor_hash = ancestor.hash_slow();
+            assert_eq!(
+                previous_header.parent_hash(),
+                &ancestor_hash,
+                "Invalid chain: block {} is not the parent of block {}",
+                ancestor.number(),
+                previous_header.number()
+            );
+            block_hashes.insert(ancestor.number(), ancestor_hash);
+            previous_header = ancestor;
         }
+
+        let db = StateDb::new(
+            self.state_trie,
+            self.storage_tries,
+            self.contracts,
+            block_hashes,
+        );
+
+        EvmEnv::new(db, header)
     }
 }
 
-/// A trait linking the block header to a commitment.
-pub trait BlockHeaderCommit<H: EvmBlockHeader> {
-    /// Creates a verifiable [Commitment] of the `header`.
-    fn commit(self, header: &Sealed<H>, config_id: B256) -> Commitment;
+// Keep everything in the Steel library private except the commitment.
+mod private {
+    alloy_sol_types::sol!("../contracts/src/steel/Steel.sol");
 }
 
-/// A generalized input type consisting of a block-based input and a commitment wrapper.
-///
-/// The `commit` field provides a mechanism to generate a commitment to the block header
-/// contained within the `input` field.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct ComposeInput<H, C> {
-    input: BlockInput<H>,
-    commit: C,
-}
-
-impl<H: EvmBlockHeader, C: BlockHeaderCommit<H>> ComposeInput<H, C> {
-    /// Creates a new composed input from a [BlockInput] and a [BlockHeaderCommit].
-    pub const fn new(input: BlockInput<H>, commit: C) -> Self {
-        Self { input, commit }
-    }
-
-    /// Disassembles this `ComposeInput`, returning the underlying input and commitment creator.
-    pub fn into_parts(self) -> (BlockInput<H>, C) {
-        (self.input, self.commit)
-    }
-
-    /// Converts the input into a [EvmEnv] for verifiable state access in the guest.
-    pub fn into_env(self) -> GuestEvmEnv<H> {
-        let mut env = self.input.into_env();
-        env.commit = self.commit.commit(&env.header, env.commit.configID);
-
-        env
-    }
-}
+/// Solidity struct representing the committed block used for validation.
+pub use private::Steel::Commitment as SolCommitment;
 
 /// Alias for readability, do not make public.
-pub(crate) type GuestEvmEnv<H> = EvmEnv<StateDb, H, Commitment>;
+pub(crate) type GuestEvmEnv<H> = EvmEnv<StateDb, H>;
 
 /// The environment to execute the contract calls in.
-pub struct EvmEnv<D, H, C> {
-    db: Option<D>,
+pub struct EvmEnv<D, H> {
+    db: D,
     cfg_env: CfgEnvWithHandlerCfg,
     header: Sealed<H>,
-    commit: C,
 }
 
-impl<D, H: EvmBlockHeader, C> EvmEnv<D, H, C> {
+impl<D, H: EvmBlockHeader> EvmEnv<D, H> {
     /// Creates a new environment.
-    ///
     /// It uses the default configuration for the latest specification.
-    pub(crate) fn new(db: D, header: Sealed<H>, commit: C) -> Self {
+    pub fn new(db: D, header: Sealed<H>) -> Self {
         let cfg_env = CfgEnvWithHandlerCfg::new_with_spec_id(Default::default(), SpecId::LATEST);
 
         Self {
-            db: Some(db),
+            db,
             cfg_env,
             header,
-            commit,
         }
     }
 
-    /// Returns the sealed header of the environment.
-    #[inline]
-    pub fn header(&self) -> &Sealed<H> {
-        &self.header
-    }
-
-    fn db(&self) -> &D {
-        // safe unwrap: self cannot be borrowed without a DB
-        self.db.as_ref().unwrap()
-    }
-
-    #[allow(dead_code)]
-    fn db_mut(&mut self) -> &mut D {
-        // safe unwrap: self cannot be borrowed without a DB
-        self.db.as_mut().unwrap()
-    }
-}
-
-impl<D, H: EvmBlockHeader> EvmEnv<D, H, Commitment> {
     /// Sets the chain ID and specification ID from the given chain spec.
-    ///
-    /// This will panic when there is no valid specification ID for the current block.
-    pub fn with_chain_spec(mut self, chain_spec: &ChainSpec) -> Self {
+    pub fn with_chain_spec(mut self, chain_spec: &config::ChainSpec) -> Self {
         self.cfg_env.chain_id = chain_spec.chain_id();
         self.cfg_env.handler_cfg.spec_id = chain_spec
             .active_fork(self.header.number(), self.header.timestamp())
             .unwrap();
-        self.commit.configID = chain_spec.digest();
-
         self
     }
 
-    /// Returns the [Commitment] used to validate the environment.
-    #[inline]
-    pub fn commitment(&self) -> &Commitment {
-        &self.commit
+    /// Returns the [SolCommitment] used to validate the environment.
+    pub fn block_commitment(&self) -> SolCommitment {
+        SolCommitment {
+            blockHash: self.header.seal(),
+            blockNumber: U256::from(self.header.number()),
+        }
     }
 
-    /// Consumes and returns the [Commitment] used to validate the environment.
-    #[inline]
-    pub fn into_commitment(self) -> Commitment {
-        self.commit
+    /// Returns the header of the environment.
+    pub fn header(&self) -> &H {
+        self.header.inner()
+    }
+}
+
+/// A simple read-only EVM database.
+///
+/// It is backed by a single [MerkleTrie] for the accounts and one [MerkleTrie] each for the
+/// accounts' storages. It panics when data is queried that is not contained in the tries.
+pub struct StateDb {
+    state_trie: MerkleTrie,
+    storage_tries: HashMap<B256, Rc<MerkleTrie>>,
+    contracts: HashMap<B256, Bytes>,
+    block_hashes: HashMap<u64, B256>,
+}
+
+impl StateDb {
+    /// Creates a new state database from the given tries.
+    pub fn new(
+        state_trie: MerkleTrie,
+        storage_tries: impl IntoIterator<Item = MerkleTrie>,
+        contracts: impl IntoIterator<Item = Bytes>,
+        block_hashes: HashMap<u64, B256>,
+    ) -> Self {
+        let contracts = contracts
+            .into_iter()
+            .map(|code| (keccak256(&code), code))
+            .collect();
+        let storage_tries = storage_tries
+            .into_iter()
+            .map(|trie| (trie.hash_slow(), Rc::new(trie)))
+            .collect();
+        Self {
+            state_trie,
+            contracts,
+            storage_tries,
+            block_hashes,
+        }
+    }
+
+    fn account(&self, address: Address) -> Option<StateAccount> {
+        self.state_trie
+            .get_rlp(keccak256(address))
+            .expect("invalid state value")
+    }
+
+    fn code_by_hash(&self, hash: B256) -> &Bytes {
+        self.contracts
+            .get(&hash)
+            .unwrap_or_else(|| panic!("code not found: {}", hash))
+    }
+
+    fn block_hash(&self, number: U256) -> B256 {
+        // block number is never bigger then u64::MAX
+        let number: u64 = number.to();
+        let hash = self
+            .block_hashes
+            .get(&number)
+            .unwrap_or_else(|| panic!("block not found: {}", number));
+        *hash
+    }
+
+    fn storage_trie(&self, root: &B256) -> Option<&Rc<MerkleTrie>> {
+        self.storage_tries.get(root)
+    }
+}
+
+/// Hash of an empty byte array, i.e. `keccak256([])`.
+pub const KECCAK_EMPTY: B256 =
+    b256!("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+
+/// Represents an account within the state trie.
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+struct StateAccount {
+    /// The number of transactions sent from this account's address.
+    pub nonce: TxNumber,
+    /// The number of Wei owned by this account's address.
+    pub balance: U256,
+    /// The root of the account's storage trie.
+    pub storage_root: B256,
+    /// The hash of the EVM code of this account.
+    pub code_hash: B256,
+}
+
+impl Default for StateAccount {
+    /// Provides default values for a [StateAccount].
+    fn default() -> Self {
+        Self {
+            nonce: 0,
+            balance: U256::ZERO,
+            storage_root: mpt::EMPTY_ROOT_HASH,
+            code_hash: KECCAK_EMPTY,
+        }
     }
 }
 
@@ -201,123 +243,4 @@ pub trait EvmBlockHeader: Sealable {
 
     /// Fills the EVM block environment with the header's data.
     fn fill_block_env(&self, blk_env: &mut BlockEnv);
-}
-
-// Keep everything in the Steel library private except the commitment.
-mod private {
-    alloy_sol_types::sol! {
-        /// A Solidity struct representing a commitment used for validation.
-        ///
-        /// This struct is used to commit to a specific claim, such as the hash of an execution block
-        /// or a beacon chain state. It includes a version, an identifier, the claim itself, and a
-        /// configuration ID to ensure the commitment is valid for the intended network.
-        #[derive(Default, PartialEq, Eq, Hash)]
-        struct Commitment {
-            /// Commitment ID.
-            ///
-            /// This ID combines the version and the actual identifier of the claim, such as the block number.
-            uint256 id;
-            /// The cryptographic digest of the commitment.
-            ///
-            /// This is the core of the commitment, representing the data being committed to,
-            /// e.g., the hash of the execution block.
-            bytes32 digest;
-            /// The cryptographic digest of the network configuration.
-            ///
-            /// This ID ensures that the commitment is valid only for the specific network configuration
-            /// it was created for.
-            bytes32 configID;
-        }
-    }
-}
-
-pub use private::Commitment;
-
-/// Version of a [`Commitment`].
-#[repr(u16)]
-#[derive(Debug, PartialEq, Eq)]
-pub enum CommitmentVersion {
-    /// Commitment to an execution block.
-    Block,
-    /// Commitment to a beacon chain state.
-    Beacon,
-}
-
-impl Commitment {
-    /// The size in bytes of the ABI-encoded commitment.
-    pub const ABI_ENCODED_SIZE: usize = 3 * 32;
-
-    /// Creates a new commitment.
-    #[inline]
-    pub const fn new(version: u16, id: u64, digest: B256, config_id: B256) -> Commitment {
-        Self {
-            id: Commitment::encode_id(id, version),
-            digest,
-            configID: config_id,
-        }
-    }
-
-    /// Decodes the `id` field into the claim ID and the commitment version.
-    #[inline]
-    pub fn decode_id(&self) -> (U256, u16) {
-        let decoded = self.id
-            & uint!(0x0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff_U256);
-        let version = (self.id.as_limbs()[3] >> 48) as u16;
-        (decoded, version)
-    }
-
-    /// ABI-encodes the commitment.
-    #[inline]
-    pub fn abi_encode(&self) -> Vec<u8> {
-        SolValue::abi_encode(self)
-    }
-
-    /// Encodes an ID and version into a single [U256] value.
-    const fn encode_id(id: u64, version: u16) -> U256 {
-        U256::from_limbs([id, 0, 0, (version as u64) << 48])
-    }
-}
-
-impl std::fmt::Debug for Commitment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (id, version) = self.decode_id();
-        f.debug_struct("Commitment")
-            .field("version", &version)
-            .field("id", &id)
-            .field("claim", &self.digest)
-            .field("configID", &self.configID)
-            .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::B256;
-
-    #[test]
-    fn size() {
-        let tests = vec![
-            Commitment::default(),
-            Commitment::new(
-                u16::MAX,
-                u64::MAX,
-                B256::repeat_byte(0xFF),
-                B256::repeat_byte(0xFF),
-            ),
-        ];
-        for test in tests {
-            assert_eq!(test.abi_encode().len(), Commitment::ABI_ENCODED_SIZE);
-        }
-    }
-
-    #[test]
-    fn versioned_id() {
-        let tests = vec![(u64::MAX, u16::MAX), (u64::MAX, 0), (0, u16::MAX), (0, 0)];
-        for test in tests {
-            let commit = Commitment::new(test.1, test.0, B256::default(), B256::default());
-            let (id, version) = commit.decode_id();
-            assert_eq!((id.to(), version), test);
-        }
-    }
 }

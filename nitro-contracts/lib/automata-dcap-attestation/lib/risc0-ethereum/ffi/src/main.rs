@@ -12,19 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    fs::{File, OpenOptions},
-    io,
-    io::Write,
-    os::unix::io::{AsRawFd, FromRawFd},
-};
+use std::io::Write;
 
-use alloy::sol_types::SolValue;
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
-use risc0_ethereum_contracts::encode_seal;
-use risc0_forge_ffi::JournalSeal;
-use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, VerifierContext};
+use ethers::abi::Token;
+use risc0_ethereum_contracts::groth16::encode;
+use risc0_zkvm::{
+    default_prover, is_dev_mode, sha::Digestible, ExecutorEnv, ProverOpts, VerifierContext,
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -41,10 +37,7 @@ enum Command {
 
 /// Run the CLI.
 pub fn main() -> Result<()> {
-    // Take stdout is ensure no extra data is written to it.
-    let mut stdout = take_stdout()?;
-
-    let output = match Command::parse() {
+    match Command::parse() {
         Command::Prove {
             guest_binary_path,
             input,
@@ -54,22 +47,22 @@ pub fn main() -> Result<()> {
         )?,
     };
 
-    // Forge test FFI calls expect hex encoded bytes sent to stdout
-    write!(&mut stdout, "{}", hex::encode(output)).context("failed to write to stdout")?;
-    stdout.flush().context("failed to flush stdout")?;
-
     Ok(())
 }
 
 /// Prints on stdio the Ethereum ABI and hex encoded proof.
-fn prove_ffi(elf_path: String, input: Vec<u8>) -> Result<Vec<u8>> {
-    let elf = std::fs::read(elf_path).expect("failed to read guest ELF");
+fn prove_ffi(elf_path: String, input: Vec<u8>) -> Result<()> {
+    let elf = std::fs::read(elf_path).unwrap();
     let (journal, seal) = prove(&elf, &input)?;
-    let calldata = JournalSeal {
-        journal: journal.into(),
-        seal: seal.into(),
-    };
-    Ok(calldata.abi_encode())
+    let calldata = vec![Token::Bytes(journal), Token::Bytes(seal)];
+    let output = hex::encode(ethers::abi::encode(&calldata));
+
+    // Forge test FFI calls expect hex encoded bytes sent to stdout
+    print!("{output}");
+    std::io::stdout()
+        .flush()
+        .context("failed to flush stdout buffer")?;
+    Ok(())
 }
 
 /// Generates journal and snark seal as a pair (`Vec<u8>`, `Vec<u8>)
@@ -84,32 +77,15 @@ fn prove(elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         .receipt;
 
     let journal = receipt.clone().journal.bytes;
-    let seal = encode_seal(&receipt)?;
+
+    let seal = match is_dev_mode() {
+        true => {
+            let mut seal = Vec::new();
+            seal.extend(vec![0u8; 4]);
+            seal.extend(receipt.claim()?.digest().as_bytes());
+            seal
+        }
+        false => encode(receipt.inner.groth16()?.seal.clone())?,
+    };
     Ok((journal, seal))
-}
-
-/// "Takes" stdout, returning a handle and ensuring no other code in this process can write to it.
-/// This is used to ensure that no additional data (e.g. log lines) is written to stdout, as any
-/// extra will cause a decoding failure in the Forge FFI cheatcode.
-fn take_stdout() -> Result<File> {
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    // Ensure all buffered data is written before redirection
-    handle.flush()?;
-
-    let devnull = OpenOptions::new().write(true).open("/dev/null")?;
-
-    unsafe {
-        // Create a copy of stdout to use for our output.
-        let dup_fd = libc::dup(handle.as_raw_fd());
-        ensure!(dup_fd >= 0, "call to libc::dup failed: {}", dup_fd);
-        // Redirect stdout to the fd we opened for /dev/null
-        let dup2_result = libc::dup2(devnull.as_raw_fd(), libc::STDOUT_FILENO);
-        ensure!(
-            dup2_result >= 0,
-            "call to libc::dup2 failed: {}",
-            dup2_result
-        );
-        Ok(File::from_raw_fd(dup_fd))
-    }
 }

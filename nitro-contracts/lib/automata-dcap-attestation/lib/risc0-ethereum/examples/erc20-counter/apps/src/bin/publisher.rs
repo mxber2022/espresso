@@ -16,116 +16,68 @@
 // to the Bonsai proving service and publish the received proofs directly
 // to your deployed app contract.
 
-use alloy::{
-    network::EthereumWallet,
-    providers::ProviderBuilder,
-    signers::local::PrivateKeySigner,
-    sol_types::{SolCall, SolValue},
-};
-use alloy_primitives::{Address, U256};
-use anyhow::{ensure, Context, Result};
+use alloy_primitives::Address;
+use alloy_sol_types::{sol, SolCall};
+use anyhow::Result;
+use apps::TxSender;
 use clap::Parser;
-use erc20_counter_methods::{BALANCE_OF_ELF, BALANCE_OF_ID};
-use risc0_ethereum_contracts::encode_seal;
-use risc0_steel::{
-    ethereum::{EthEvmEnv, ETH_SEPOLIA_CHAIN_SPEC},
-    host::BlockNumberOrTag,
-    Commitment, Contract,
-};
-use risc0_zkvm::{default_prover, sha::Digest, ExecutorEnv, ProverOpts, VerifierContext};
-use tokio::task;
+use erc20_counter_methods::BALANCE_OF_ELF;
+use risc0_ethereum_contracts::groth16::encode;
+use risc0_steel::{config::ETH_SEPOLIA_CHAIN_SPEC, ethereum::EthEvmEnv, Contract, EvmBlockHeader};
+use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, VerifierContext};
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
-alloy::sol! {
-    /// Interface to be called by the guest.
+sol! {
+    /// ERC-20 balance function signature.
+    /// This must match the signature in the guest.
     interface IERC20 {
         function balanceOf(address account) external view returns (uint);
     }
-
-    /// Data committed to by the guest.
-    struct Journal {
-        Commitment commitment;
-        address tokenContract;
-    }
 }
 
-alloy::sol!(
-    #[sol(rpc, all_derives)]
-    "../contracts/src/ICounter.sol"
-);
+sol!("../contracts/ICounter.sol");
 
-/// Simple program to create a proof to increment the Counter contract.
-#[derive(Parser)]
+/// Arguments of the publisher CLI.
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Ethereum private key
-    #[clap(long, env)]
-    eth_wallet_private_key: PrivateKeySigner,
-
-    /// Ethereum RPC endpoint URL
-    #[clap(long, env)]
-    eth_rpc_url: Url,
-
-    /// Beacon API endpoint URL
-    ///
-    /// Steel uses a beacon block commitment instead of the execution block.
-    /// This allows proofs to be validated using the EIP-4788 beacon roots contract.
-    #[clap(long, env)]
-    #[cfg(any(feature = "beacon", feature = "history"))]
-    beacon_api_url: Url,
-
-    /// Ethereum block to use as the state for the contract call
-    #[clap(long, env, default_value_t = BlockNumberOrTag::Parent)]
-    execution_block: BlockNumberOrTag,
-
-    /// Ethereum block to use for the beacon block commitment.
-    #[clap(long, env)]
-    #[cfg(feature = "history")]
-    commitment_block: BlockNumberOrTag,
-
-    /// Address of the Counter verifier contract
+    /// Ethereum chain ID
     #[clap(long)]
-    counter_address: Address,
+    chain_id: u64,
 
-    /// Address of the ERC20 token contract
+    /// Ethereum Node endpoint.
+    #[clap(long, env)]
+    eth_wallet_private_key: String,
+
+    /// Ethereum Node endpoint.
+    #[clap(long, env)]
+    rpc_url: String,
+
+    /// Counter's contract address on Ethereum
     #[clap(long)]
-    token_contract: Address,
+    contract: Address,
 
-    /// Address to query the token balance of
+    /// ERC20 contract address on Ethereum
+    #[clap(long)]
+    token: Address,
+
+    /// Account address to read the balance_of on Ethereum
     #[clap(long)]
     account: Address,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    // Parse the command line arguments.
-    let args = Args::try_parse()?;
 
-    // Create an alloy provider for that private key and URL.
-    let wallet = EthereumWallet::from(args.eth_wallet_private_key);
-    let provider = ProviderBuilder::new()
-        .with_recommended_fillers()
-        .wallet(wallet)
-        .on_http(args.eth_rpc_url);
+    // parse the command line arguments
+    let args = Args::parse();
 
-    #[cfg(feature = "beacon")]
-    log::info!("Beacon commitment to block {}", args.execution_block);
-    #[cfg(feature = "history")]
-    log::info!("History commitment to block {}", args.commitment_block);
-
-    let builder = EthEvmEnv::builder()
-        .provider(provider.clone())
-        .block_number_or_tag(args.execution_block);
-    #[cfg(any(feature = "beacon", feature = "history"))]
-    let builder = builder.beacon_api(args.beacon_api_url);
-    #[cfg(feature = "history")]
-    let builder = builder.commitment_block(args.commitment_block);
-
-    let mut env = builder.build().await?;
+    // Create an EVM environment from an RPC endpoint and a block number. If no block number is
+    // provided, the latest block is used.
+    let mut env = EthEvmEnv::from_rpc(&args.rpc_url, None)?;
     //  The `with_chain_spec` method is used to specify the chain configuration.
     env = env.with_chain_spec(&ETH_SEPOLIA_CHAIN_SPEC);
 
@@ -134,67 +86,58 @@ async fn main() -> Result<()> {
         account: args.account,
     };
 
-    // Preflight the call to prepare the input that is required to execute the function in
-    // the guest without RPC access. It also returns the result of the call.
-    let mut contract = Contract::preflight(args.token_contract, &mut env);
-    let returns = contract.call_builder(&call).call().await?._0;
-    assert!(returns >= U256::from(1));
+    // Preflight the call to execute the function in the guest.
+    let mut contract = Contract::preflight(args.token, &mut env);
+    let returns = contract.call_builder(&call).call()?;
+    println!(
+        "For block {} calling `{}` on {} returns: {}",
+        env.header().number(),
+        IERC20::balanceOfCall::SIGNATURE,
+        args.token,
+        returns._0
+    );
 
-    // Finally, construct the input from the environment.
-    // There are two options: Use EIP-4788 for verification by providing a Beacon API endpoint,
-    // or use the regular `blockhash' opcode.
-    let evm_input = env.into_input().await?;
+    println!("proving...");
+    let view_call_input = env.into_input()?;
+    let env = ExecutorEnv::builder()
+        .write(&view_call_input)?
+        .write(&args.token)?
+        .write(&args.account)?
+        .build()?;
 
-    // Create the steel proof.
-    let prove_info = task::spawn_blocking(move || {
-        let env = ExecutorEnv::builder()
-            .write(&evm_input)?
-            .write(&args.token_contract)?
-            .write(&args.account)?
-            .build()
-            .unwrap();
-
-        default_prover().prove_with_ctx(
+    let receipt = default_prover()
+        .prove_with_ctx(
             env,
             &VerifierContext::default(),
             BALANCE_OF_ELF,
             &ProverOpts::groth16(),
-        )
-    })
-    .await?
-    .context("failed to create proof")?;
-    let receipt = prove_info.receipt;
-    let journal = &receipt.journal.bytes;
+        )?
+        .receipt;
+    println!("proving...done");
 
-    // Decode and log the commitment
-    let journal = Journal::abi_decode(journal, true).context("invalid journal")?;
-    log::debug!("Steel commitment: {:?}", journal.commitment);
+    // Create a new `TxSender`.
+    let tx_sender = TxSender::new(
+        args.chain_id,
+        &args.rpc_url,
+        &args.eth_wallet_private_key,
+        &args.contract.to_string(),
+    )?;
 
-    // ABI encode the seal.
-    let seal = encode_seal(&receipt).context("invalid receipt")?;
+    // Encode the groth16 seal with the selector
+    let seal = encode(receipt.inner.groth16()?.seal.clone())?;
 
-    // Create an alloy instance of the Counter contract.
-    let contract = ICounter::new(args.counter_address, &provider);
+    // Encode the function call for `ICounter.increment(journal, seal)`.
+    let calldata = ICounter::incrementCall {
+        journalData: receipt.journal.bytes.into(),
+        seal: seal.into(),
+    }
+    .abi_encode();
 
-    // Call ICounter::imageID() to check that the contract has been deployed correctly.
-    let contract_image_id = Digest::from(contract.imageID().call().await?._0.0);
-    ensure!(contract_image_id == Digest::from(BALANCE_OF_ID));
-
-    // Call the increment function of the contract and wait for confirmation.
-    log::info!(
-        "Sending Tx calling {} Function of {:#}...",
-        ICounter::incrementCall::SIGNATURE,
-        contract.address()
-    );
-    let call_builder = contract.increment(receipt.journal.bytes.into(), seal.into());
-    log::debug!("Send {} {}", contract.address(), call_builder.calldata());
-    let pending_tx = call_builder.send().await?;
-    let tx_hash = *pending_tx.tx_hash();
-    let receipt = pending_tx
-        .get_receipt()
-        .await
-        .with_context(|| format!("transaction did not confirm: {}", tx_hash))?;
-    ensure!(receipt.status(), "transaction failed: {}", tx_hash);
+    // Send the calldata to Ethereum.
+    println!("sending tx...");
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(tx_sender.send(calldata))?;
+    println!("sending tx...done");
 
     Ok(())
 }

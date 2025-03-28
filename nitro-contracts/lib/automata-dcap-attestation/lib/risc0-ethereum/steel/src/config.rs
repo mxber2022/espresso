@@ -15,140 +15,143 @@
 //! Handling different blockchain specifications.
 use std::collections::BTreeMap;
 
-use alloy_primitives::{b256, BlockNumber, BlockTimestamp, ChainId, B256};
+use alloy_primitives::{BlockNumber, ChainId};
 use anyhow::bail;
+use once_cell::sync::Lazy;
 use revm::primitives::SpecId;
 use serde::{Deserialize, Serialize};
-use sha2::{digest::Output, Digest, Sha256};
+
+/// The Ethereum Mainnet specification.
+pub static ETH_MAINNET_CHAIN_SPEC: Lazy<ChainSpec> = Lazy::new(|| ChainSpec {
+    chain_id: 1,
+    max_spec_id: SpecId::CANCUN,
+    hard_forks: BTreeMap::from([
+        (SpecId::MERGE, ForkCondition::Block(15537394)),
+        (SpecId::SHANGHAI, ForkCondition::Timestamp(1681338455)),
+        (SpecId::CANCUN, ForkCondition::Timestamp(1710338135)),
+    ]),
+    gas_constants: BTreeMap::from([(SpecId::LONDON, EIP1559_CONSTANTS_DEFAULT)]),
+});
+
+/// The Ethereum Sepolia specification.
+pub static ETH_SEPOLIA_CHAIN_SPEC: Lazy<ChainSpec> = Lazy::new(|| ChainSpec {
+    chain_id: 11155111,
+    max_spec_id: SpecId::CANCUN,
+    hard_forks: BTreeMap::from([
+        (SpecId::MERGE, ForkCondition::Block(1735371)),
+        (SpecId::SHANGHAI, ForkCondition::Timestamp(1677557088)),
+        (SpecId::CANCUN, ForkCondition::Timestamp(1706655072)),
+    ]),
+    gas_constants: BTreeMap::from([(SpecId::LONDON, EIP1559_CONSTANTS_DEFAULT)]),
+});
+
+/// The gas constants as defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559).
+pub const EIP1559_CONSTANTS_DEFAULT: Eip1559Constants = Eip1559Constants {
+    base_fee_change_denominator: 8,
+    base_fee_max_increase_denominator: 8,
+    base_fee_max_decrease_denominator: 8,
+    elasticity_multiplier: 2,
+};
 
 /// The condition at which a fork is activated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum ForkCondition {
     /// The fork is activated with a certain block.
     Block(BlockNumber),
     /// The fork is activated with a specific timestamp.
-    Timestamp(BlockTimestamp),
+    Timestamp(u64),
+    /// The fork is never activated
+    #[default]
+    TBD,
 }
 
 impl ForkCondition {
     /// Returns whether the condition has been met.
-    #[inline]
     pub fn active(&self, block_number: BlockNumber, timestamp: u64) -> bool {
         match self {
             ForkCondition::Block(block) => *block <= block_number,
             ForkCondition::Timestamp(ts) => *ts <= timestamp,
+            ForkCondition::TBD => false,
         }
     }
+}
+
+/// [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) parameters.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Eip1559Constants {
+    pub base_fee_change_denominator: u64,
+    pub base_fee_max_increase_denominator: u64,
+    pub base_fee_max_decrease_denominator: u64,
+    pub elasticity_multiplier: u64,
 }
 
 /// Specification of a specific chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainSpec {
-    /// Chain identifier.
-    pub chain_id: ChainId,
-    /// Map revm specification IDs to their respective activation condition.
-    pub forks: BTreeMap<SpecId, ForkCondition>,
-}
-
-impl Default for ChainSpec {
-    /// Defaults to Ethereum Chain ID using the latest specification.
-    #[inline]
-    fn default() -> Self {
-        Self::new_single(1, SpecId::LATEST)
-    }
+    chain_id: ChainId,
+    max_spec_id: SpecId,
+    hard_forks: BTreeMap<SpecId, ForkCondition>,
+    gas_constants: BTreeMap<SpecId, Eip1559Constants>,
 }
 
 impl ChainSpec {
-    /// Digest of the default configuration, i.e. `ChainSpec::default().digest()`.
-    pub const DEFAULT_DIGEST: B256 =
-        b256!("0e0fe3926625a8ffdd4123ad55bf3a419918885daa2e506df18c0e3d6b6c5009");
-
     /// Creates a new configuration consisting of only one specification ID.
-    ///
-    /// For example, this can be used to create a [ChainSpec] for an anvil instance:
-    /// ```rust
-    /// # use revm::primitives::SpecId;
-    /// # use risc0_steel::config::ChainSpec;
-    /// let spec = ChainSpec::new_single(31337, SpecId::CANCUN);
-    /// ```
-    pub fn new_single(chain_id: ChainId, spec_id: SpecId) -> Self {
+    pub fn new_single(
+        chain_id: ChainId,
+        spec_id: SpecId,
+        eip_1559_constants: Eip1559Constants,
+    ) -> Self {
         ChainSpec {
             chain_id,
-            forks: BTreeMap::from([(spec_id, ForkCondition::Block(0))]),
+            max_spec_id: spec_id,
+            hard_forks: BTreeMap::from([(spec_id, ForkCondition::Block(0))]),
+            gas_constants: BTreeMap::from([(spec_id, eip_1559_constants)]),
         }
     }
-
     /// Returns the network chain ID.
-    #[inline]
     pub fn chain_id(&self) -> ChainId {
         self.chain_id
     }
-
-    /// Returns the cryptographic digest of the entire network configuration.
-    #[inline]
-    pub fn digest(&self) -> B256 {
-        <[u8; 32]>::from(StructHash::digest::<Sha256>(self)).into()
+    /// Validates a [SpecId].
+    pub fn validate_spec_id(&self, spec_id: SpecId) -> anyhow::Result<()> {
+        let (min_spec_id, _) = self.hard_forks.first_key_value().unwrap();
+        if spec_id < *min_spec_id {
+            bail!("expected >= {:?}, got {:?}", min_spec_id, spec_id);
+        }
+        if spec_id > self.max_spec_id {
+            bail!("expected <= {:?}, got {:?}", self.max_spec_id, spec_id);
+        }
+        Ok(())
     }
-
-    /// Returns the [SpecId] for a given block number and timestamp or an error if not supported.
+    /// Returns the [SpecId] for a given block number and timestamp or an error if not
+    /// supported.
     pub fn active_fork(&self, block_number: BlockNumber, timestamp: u64) -> anyhow::Result<SpecId> {
-        for (spec_id, fork) in self.forks.iter().rev() {
+        match self.spec_id(block_number, timestamp) {
+            Some(spec_id) => {
+                if spec_id > self.max_spec_id {
+                    bail!("expected <= {:?}, got {:?}", self.max_spec_id, spec_id);
+                } else {
+                    Ok(spec_id)
+                }
+            }
+            None => bail!("no supported fork for block {}", block_number),
+        }
+    }
+    /// Returns the Eip1559 constants for a given [SpecId].
+    pub fn gas_constants(&self, spec_id: SpecId) -> Option<&Eip1559Constants> {
+        self.gas_constants
+            .range(..=spec_id)
+            .next_back()
+            .map(|(_, v)| v)
+    }
+
+    fn spec_id(&self, block_number: BlockNumber, timestamp: u64) -> Option<SpecId> {
+        for (spec_id, fork) in self.hard_forks.iter().rev() {
             if fork.active(block_number, timestamp) {
-                return Ok(*spec_id);
+                return Some(*spec_id);
             }
         }
-        bail!("no supported fork for block {}", block_number)
-    }
-}
-
-// NOTE: We do not want to make this public, to avoid having multiple traits with the `digest`
-// function in the RISC Zero ecosystem of crates.
-/// A simple structured hasher.
-trait StructHash {
-    fn digest<D: Digest>(&self) -> Output<D>;
-}
-
-impl StructHash for (&SpecId, &ForkCondition) {
-    /// Computes the cryptographic digest of a fork.
-    /// The hash is H(SpecID || ForkCondition::name || ForkCondition::value )
-    fn digest<D: Digest>(&self) -> Output<D> {
-        let mut hasher = D::new();
-        hasher.update([*self.0 as u8]);
-        match self.1 {
-            ForkCondition::Block(n) => {
-                hasher.update(b"Block");
-                hasher.update(n.to_le_bytes());
-            }
-            ForkCondition::Timestamp(ts) => {
-                hasher.update(b"Timestamp");
-                hasher.update(ts.to_le_bytes());
-            }
-        }
-        hasher.finalize()
-    }
-}
-
-impl StructHash for ChainSpec {
-    /// Computes the cryptographic digest of a chain spec.
-    ///
-    /// This is equivalent to the `tagged_struct` structural hashing routines used for RISC Zero
-    /// data structures:
-    /// `tagged_struct("ChainSpec(chain_id,forks)", forks.into_vec(), &[chain_id, chain_id >> 32])`
-    fn digest<D: Digest>(&self) -> Output<D> {
-        let tag_digest = D::digest(b"ChainSpec(chain_id,forks)");
-
-        let mut hasher = D::new();
-        hasher.update(tag_digest);
-        // down
-        self.forks
-            .iter()
-            .for_each(|fork| hasher.update(fork.digest::<D>()));
-        // data
-        hasher.update(self.chain_id.to_le_bytes());
-        // down.len() as u16
-        hasher.update(u16::try_from(self.forks.len()).unwrap().to_le_bytes());
-
-        hasher.finalize()
+        None
     }
 }
 
@@ -157,37 +160,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_fork() {
-        let spec = ChainSpec {
-            chain_id: 1,
-            forks: BTreeMap::from([
-                (SpecId::MERGE, ForkCondition::Block(2)),
-                (SpecId::CANCUN, ForkCondition::Timestamp(60)),
-            ]),
-        };
-
-        assert!(spec.active_fork(0, 0).is_err());
-        assert_eq!(spec.active_fork(2, 0).unwrap(), SpecId::MERGE);
-        assert_eq!(spec.active_fork(u64::MAX, 59).unwrap(), SpecId::MERGE);
-        assert_eq!(spec.active_fork(0, 60).unwrap(), SpecId::CANCUN);
+    fn spec_id() {
+        assert_eq!(ETH_MAINNET_CHAIN_SPEC.spec_id(15537393, 0), None);
         assert_eq!(
-            spec.active_fork(u64::MAX, u64::MAX).unwrap(),
-            SpecId::CANCUN
+            ETH_MAINNET_CHAIN_SPEC.spec_id(15537394, 0),
+            Some(SpecId::MERGE)
+        );
+        assert_eq!(
+            ETH_MAINNET_CHAIN_SPEC.spec_id(17034869, 0),
+            Some(SpecId::MERGE)
+        );
+        assert_eq!(
+            ETH_MAINNET_CHAIN_SPEC.spec_id(0, 1681338455),
+            Some(SpecId::SHANGHAI)
         );
     }
 
     #[test]
-    fn default_digest() {
-        let exp: [u8; 32] = {
-            let mut h = Sha256::new();
-            h.update(Sha256::digest(b"ChainSpec(chain_id,forks)"));
-            h.update((&SpecId::LATEST, &ForkCondition::Block(0)).digest::<Sha256>());
-            h.update((1u64 as u32).to_le_bytes());
-            h.update(((1u64 >> 32) as u32).to_le_bytes());
-            h.update(1u16.to_le_bytes());
-            h.finalize().into()
-        };
-        assert_eq!(ChainSpec::DEFAULT_DIGEST.0, exp);
-        assert_eq!(ChainSpec::default().digest().0, exp);
+    fn gas_constants() {
+        assert_eq!(ETH_MAINNET_CHAIN_SPEC.gas_constants(SpecId::BERLIN), None);
+        assert_eq!(
+            ETH_MAINNET_CHAIN_SPEC.gas_constants(SpecId::MERGE),
+            Some(&EIP1559_CONSTANTS_DEFAULT)
+        );
+        assert_eq!(
+            ETH_MAINNET_CHAIN_SPEC.gas_constants(SpecId::SHANGHAI),
+            Some(&EIP1559_CONSTANTS_DEFAULT)
+        );
     }
 }

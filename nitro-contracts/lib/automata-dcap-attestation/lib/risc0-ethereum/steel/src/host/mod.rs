@@ -14,202 +14,133 @@
 
 //! Functionality that is only needed for the host and not the guest.
 
-use crate::{
-    beacon::BeaconCommit,
-    block::BlockInput,
-    config::ChainSpec,
-    ethereum::{EthBlockHeader, EthEvmEnv},
-    history::HistoryCommit,
-    host::db::ProviderDb,
-    ComposeInput, EvmBlockHeader, EvmEnv, EvmInput,
+use self::{
+    db::ProofDb,
+    provider::{EthersProvider, Provider},
 };
-use alloy::eips::eip1898::{HexStringMissingPrefixError, ParseBlockNumberError};
-use alloy::{
-    network::{Ethereum, Network},
-    providers::Provider,
-    rpc::types::BlockNumberOrTag as AlloyBlockNumberOrTag,
-    transports::Transport,
-};
-use alloy_primitives::B256;
-use anyhow::{ensure, Result};
-use core::fmt;
-use db::{AlloyDb, ProofDb};
-use std::fmt::Display;
-use std::str::FromStr;
-use url::Url;
+use crate::{ethereum::EthEvmEnv, EvmBlockHeader, EvmEnv, EvmInput, MerkleTrie};
+use alloy_primitives::{Sealable, B256};
+use anyhow::{ensure, Context};
+use ethers_providers::{Http, RetryClient};
+use log::debug;
+use revm::primitives::HashMap;
 
-mod builder;
 pub mod db;
-
-pub use builder::EvmEnvBuilder;
-
-/// A block number (or tag - "latest", "safe", "finalized").
-/// This enum is used to specify which block to query when interacting with the blockchain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum BlockNumberOrTag {
-    /// The most recent block in the canonical chain observed by the client.
-    #[default]
-    Latest,
-    /// The parent of the most recent block in the canonical chain observed by the client.
-    /// This is equivalent to `Latest - 1`.
-    Parent,
-    /// The most recent block considered "safe" by the client. This typically refers to a block
-    /// that is sufficiently deep in the chain to be considered irreversible.
-    Safe,
-    /// The most recent finalized block in the chain. Finalized blocks are guaranteed to be
-    /// part of the canonical chain.
-    Finalized,
-    /// A specific block number in the canonical chain.
-    Number(u64),
-}
-
-impl BlockNumberOrTag {
-    /// Converts the `BlockNumberOrTag` into the corresponding RPC type.
-    async fn into_rpc_type<T, N, P>(self, provider: P) -> Result<AlloyBlockNumberOrTag>
-    where
-        T: Transport + Clone,
-        N: Network,
-        P: Provider<T, N>,
-    {
-        let number = match self {
-            BlockNumberOrTag::Latest => AlloyBlockNumberOrTag::Latest,
-            BlockNumberOrTag::Parent => {
-                let latest = provider.get_block_number().await?;
-                ensure!(latest > 0, "genesis does not have a parent");
-                AlloyBlockNumberOrTag::Number(latest - 1)
-            }
-            BlockNumberOrTag::Safe => AlloyBlockNumberOrTag::Safe,
-            BlockNumberOrTag::Finalized => AlloyBlockNumberOrTag::Finalized,
-            BlockNumberOrTag::Number(n) => AlloyBlockNumberOrTag::Number(n),
-        };
-        Ok(number)
-    }
-}
-
-impl FromStr for BlockNumberOrTag {
-    type Err = ParseBlockNumberError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let block = match s {
-            "latest" => Self::Latest,
-            "parent" => Self::Parent,
-            "safe" => Self::Safe,
-            "finalized" => Self::Finalized,
-            _number => {
-                if let Some(hex_val) = s.strip_prefix("0x") {
-                    let number = u64::from_str_radix(hex_val, 16);
-                    Self::Number(number?)
-                } else {
-                    return Err(HexStringMissingPrefixError::default().into());
-                }
-            }
-        };
-        Ok(block)
-    }
-}
-
-impl Display for BlockNumberOrTag {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Number(x) => write!(f, "0x{x:x}"),
-            Self::Latest => f.write_str("latest"),
-            Self::Parent => f.write_str("parent"),
-            Self::Safe => f.write_str("safe"),
-            Self::Finalized => f.write_str("finalized"),
-        }
-    }
-}
+pub mod provider;
 
 /// Alias for readability, do not make public.
-pub(crate) type HostEvmEnv<D, H, C> = EvmEnv<ProofDb<D>, H, HostCommit<C>>;
-type EthHostEvmEnv<D, C> = EthEvmEnv<ProofDb<D>, HostCommit<C>>;
+pub(crate) type HostEvmEnv<P, H> = EvmEnv<ProofDb<P>, H>;
 
-/// Wrapper for the commit on the host.
-pub struct HostCommit<C> {
-    inner: C,
-    config_id: B256,
-}
+/// The Ethers client type.
+pub type EthersClient = ethers_providers::Provider<RetryClient<Http>>;
 
-impl<T, N, P, H> HostEvmEnv<AlloyDb<T, N, P>, H, ()>
-where
-    T: Transport + Clone,
-    N: Network,
-    P: Provider<T, N>,
-    H: EvmBlockHeader + TryFrom<<N as Network>::HeaderResponse>,
-    <H as TryFrom<<N as Network>::HeaderResponse>>::Error: Display,
-{
-    /// Converts the environment into a [EvmInput] committing to an execution block hash.
-    pub async fn into_input(self) -> Result<EvmInput<H>> {
-        let input = BlockInput::from_proof_db(self.db.unwrap(), self.header).await?;
+impl EthEvmEnv<ProofDb<EthersProvider<EthersClient>>> {
+    /// Creates a new provable [EvmEnv] for Ethereum from an RPC endpoint.
+    pub fn from_rpc(url: &str, block_number: Option<u64>) -> anyhow::Result<Self> {
+        let client = EthersClient::new_client(url, 3, 500)?;
+        let provider = EthersProvider::new(client);
 
-        Ok(EvmInput::Block(input))
+        // get the latest block number if none is provided
+        let block_number = match block_number {
+            Some(n) => n,
+            None => provider.get_block_number()?,
+        };
+
+        EvmEnv::from_provider(provider, block_number)
     }
 }
 
-impl<D, H: EvmBlockHeader, C> HostEvmEnv<D, H, C> {
-    /// Sets the chain ID and specification ID from the given chain spec.
+impl<P: Provider> EvmEnv<ProofDb<P>, P::Header> {
+    /// Creates a new provable [EvmEnv] from a [Provider].
+    pub fn from_provider(provider: P, block_number: u64) -> anyhow::Result<Self> {
+        let header = provider
+            .get_block_header(block_number)?
+            .with_context(|| format!("block {block_number} not found"))?;
+
+        // create a new database backed by the provider
+        let db = ProofDb::new(provider, block_number);
+
+        Ok(EvmEnv::new(db, header.seal_slow()))
+    }
+}
+
+impl<P: Provider> EvmEnv<ProofDb<P>, P::Header> {
+    /// Converts the environment into a [EvmInput].
     ///
-    /// This will panic when there is no valid specification ID for the current block.
-    pub fn with_chain_spec(mut self, chain_spec: &ChainSpec) -> Self {
-        self.cfg_env.chain_id = chain_spec.chain_id();
-        self.cfg_env.handler_cfg.spec_id = chain_spec
-            .active_fork(self.header.number(), self.header.timestamp())
-            .unwrap();
-        self.commit.config_id = chain_spec.digest();
+    /// The resulting input contains inclusion proofs for all the required chain state data. It can
+    /// therefore be used to execute the same calls in a verifiable way in the zkVM.
+    pub fn into_input(self) -> anyhow::Result<EvmInput<P::Header>> {
+        let db = &self.db;
 
-        self
-    }
-}
+        // use the same provider as the database
+        let provider = db.provider();
 
-impl<T, P> EthHostEvmEnv<AlloyDb<T, Ethereum, P>, BeaconCommit>
-where
-    T: Transport + Clone,
-    P: Provider<T, Ethereum>,
-{
-    /// Converts the environment into a [EvmInput] committing to a Beacon Chain block root.
-    pub async fn into_input(self) -> Result<EvmInput<EthBlockHeader>> {
-        let input = BlockInput::from_proof_db(self.db.unwrap(), self.header).await?;
+        // retrieve EIP-1186 proofs for all accounts
+        let mut proofs = Vec::new();
+        for (address, storage_keys) in db.accounts() {
+            let proof = provider.get_proof(
+                *address,
+                storage_keys.iter().map(|v| B256::from(*v)).collect(),
+                db.block_number(),
+            )?;
+            proofs.push(proof);
+        }
 
-        Ok(EvmInput::Beacon(ComposeInput::new(
-            input,
-            self.commit.inner,
-        )))
-    }
-}
+        // build the sparse MPT for the state and verify against the header
+        let state_nodes = proofs.iter().flat_map(|p| p.account_proof.iter());
+        let state_trie =
+            MerkleTrie::from_rlp_nodes(state_nodes).context("invalid account proof")?;
+        ensure!(
+            self.header.state_root() == &state_trie.hash_slow(),
+            "root of the state trie does not match the header"
+        );
 
-impl<T, P> EthHostEvmEnv<AlloyDb<T, Ethereum, P>, HistoryCommit>
-where
-    T: Transport + Clone,
-    P: Provider<T, Ethereum>,
-{
-    /// Converts the environment into a [EvmInput] recursively committing to multiple Beacon Chain
-    /// block roots.
-    #[stability::unstable(feature = "history")]
-    pub async fn into_input(self) -> Result<EvmInput<EthBlockHeader>> {
-        let input = BlockInput::from_proof_db(self.db.unwrap(), self.header).await?;
+        // build the sparse MPT for account storages and filter duplicates
+        let mut storage_tries = HashMap::new();
+        for proof in proofs {
+            // skip non-existing accounts or accounts where no storage slots were requested
+            if proof.storage_proof.is_empty() || proof.storage_hash.is_zero() {
+                continue;
+            }
 
-        Ok(EvmInput::History(ComposeInput::new(
-            input,
-            self.commit.inner,
-        )))
-    }
-}
+            let storage_nodes = proof.storage_proof.iter().flat_map(|p| p.proof.iter());
+            let storage_trie =
+                MerkleTrie::from_rlp_nodes(storage_nodes).context("invalid storage proof")?;
+            storage_tries.insert(storage_trie.hash_slow(), storage_trie);
+        }
+        let storage_tries: Vec<_> = storage_tries.into_values().collect();
 
-impl<T, P> EthHostEvmEnv<AlloyDb<T, Ethereum, P>, ()>
-where
-    T: Transport + Clone,
-    P: Provider<T, Ethereum>,
-{
-    /// Converts the environment into a [EvmInput] committing to an Ethereum Beacon block root.
-    #[deprecated(
-        since = "0.14.0",
-        note = "use `EvmEnv::builder().beacon_api()` instead"
-    )]
-    pub async fn into_beacon_input(self, url: Url) -> Result<EvmInput<EthBlockHeader>> {
-        let commit =
-            BeaconCommit::from_header(self.header(), self.db().inner().provider(), url).await?;
-        let input = BlockInput::from_proof_db(self.db.unwrap(), self.header).await?;
+        // collect the bytecode of all referenced contracts
+        let contracts: Vec<_> = db.contracts().values().cloned().collect();
 
-        Ok(EvmInput::Beacon(ComposeInput::new(input, commit)))
+        // retrieve ancestor block headers
+        let mut ancestors = Vec::new();
+        if let Some(block_hash_min_number) = db.block_hash_numbers().iter().min() {
+            let block_hash_min_number: u64 = block_hash_min_number.to();
+            for number in (block_hash_min_number..db.block_number()).rev() {
+                let header = provider
+                    .get_block_header(number)?
+                    .with_context(|| format!("block {number} not found"))?;
+                ancestors.push(header);
+            }
+        }
+
+        debug!("state size: {}", state_trie.size());
+        debug!("storage tries: {}", storage_tries.len());
+        debug!(
+            "total storage size: {}",
+            storage_tries.iter().map(|t| t.size()).sum::<usize>()
+        );
+        debug!("contracts: {}", contracts.len());
+        debug!("blocks: {}", ancestors.len());
+
+        let header = self.header.into_inner();
+        Ok(EvmInput {
+            header,
+            state_trie,
+            storage_tries,
+            contracts,
+            ancestors,
+        })
     }
 }
