@@ -7,66 +7,72 @@ import {PCSConstants} from "./PCSConstants.t.sol";
 import {CA} from "../../src/Common.sol";
 
 abstract contract PCSSetupBase is TestSetupBase, PCSConstants {
+    bytes32 rootAttestation;
+    bytes32 rootCrlAttestation;
+    bytes32 signingAttestation;
+    bytes32 platformAttestation;
+    bytes32 platformCrlAttestation;
+
     function setUp() public virtual override {
         super.setUp();
 
+        vm.startPrank(admin);
+
         // insert root CA
-        pcs.upsertPcsCertificates(CA.ROOT, rootDer);
+        rootAttestation = pcs.upsertPcsCertificates(CA.ROOT, rootDer);
 
         // insert root CRL
-        pcs.upsertRootCACrl(rootCrlDer);
+        rootCrlAttestation = pcs.upsertRootCACrl(rootCrlDer);
 
         // insert Signing CA
-        pcs.upsertPcsCertificates(CA.SIGNING, signingDer);
+        signingAttestation = pcs.upsertPcsCertificates(CA.SIGNING, signingDer);
 
         // insert Platform CA
-        pcs.upsertPcsCertificates(CA.PLATFORM, platformDer);
+        platformAttestation = pcs.upsertPcsCertificates(CA.PLATFORM, platformDer);
 
         // insert PCK CRL
-        pcs.upsertPckCrl(CA.PLATFORM, pckCrlDer);
+        platformCrlAttestation = pcs.upsertPckCrl(CA.PLATFORM, pckCrlDer);
+
+        vm.stopPrank();
     }
 
-    function testPcsSetup() public readAsAuthorizedCaller {
+    function testPcsSetup() public {
         // validate RootCA attestations
-        bytes32 key = pcs.PCS_KEY(CA.ROOT, false);
-        bytes memory attestedData = pcs.getAttestedData(key);
-        bytes32 collateralHash = pcs.getCollateralHash(key);
+        bytes memory attestedData = pcs.getAttestedData(rootAttestation);
+        bytes32 collateralHash = pcs.getCollateralHash(rootAttestation);
+
         (bytes memory tbs,) = x509Lib.getTbsAndSig(rootDer);
         bytes32 actualHash = keccak256(tbs);
         assertEq(actualHash, collateralHash);
         assertEq(keccak256(attestedData), keccak256(rootDer));
 
         // validate RootCRL attestations
-        key = pcs.PCS_KEY(CA.ROOT, true);
-        attestedData = pcs.getAttestedData(key);
-        collateralHash = pcs.getCollateralHash(key);
+        attestedData = pcs.getAttestedData(rootCrlAttestation);
+        collateralHash = pcs.getCollateralHash(rootCrlAttestation);
         (tbs,) = x509CrlLib.getTbsAndSig(rootCrlDer);
         actualHash = keccak256(tbs);
         assertEq(actualHash, collateralHash);
         assertEq(keccak256(attestedData), keccak256(rootCrlDer));
 
         // validate SigningCA attestations
-        key = pcs.PCS_KEY(CA.SIGNING, false);
-        attestedData = pcs.getAttestedData(key);
-        collateralHash = pcs.getCollateralHash(key);
+        attestedData = pcs.getAttestedData(signingAttestation);
+        collateralHash = pcs.getCollateralHash(signingAttestation);
         (tbs,) = x509CrlLib.getTbsAndSig(signingDer);
         actualHash = keccak256(tbs);
         assertEq(actualHash, collateralHash);
         assertEq(keccak256(attestedData), keccak256(signingDer));
 
         // validate PlatformCA attestations
-        key = pcs.PCS_KEY(CA.PLATFORM, false);
-        attestedData = pcs.getAttestedData(key);
-        collateralHash = pcs.getCollateralHash(key);
+        attestedData = pcs.getAttestedData(platformAttestation);
+        collateralHash = pcs.getCollateralHash(platformAttestation);
         (tbs,) = x509CrlLib.getTbsAndSig(platformDer);
         actualHash = keccak256(tbs);
         assertEq(actualHash, collateralHash);
         assertEq(keccak256(attestedData), keccak256(platformDer));
 
         // validate PlatformCRL attestations
-        key = pcs.PCS_KEY(CA.PLATFORM, true);
-        attestedData = pcs.getAttestedData(key);
-        collateralHash = pcs.getCollateralHash(key);
+        attestedData = pcs.getAttestedData(platformCrlAttestation);
+        collateralHash = pcs.getCollateralHash(platformCrlAttestation);
         (tbs,) = x509CrlLib.getTbsAndSig(pckCrlDer);
         actualHash = keccak256(tbs);
         assertEq(actualHash, collateralHash);

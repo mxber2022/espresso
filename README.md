@@ -1,222 +1,112 @@
-# espresso
- 
-npx hardhat run scripts/deployment.ts --network arbSepolia                              
-Deploying contracts with maxDataSize: 117964
-Ignoring maxDataSize warning
-env var ESPRESSO_LIGHT_CLIENT_ADDRESS not set, it needs to be set to deploy the RollupCreator for the espresso integration
-* New Bridge created at address: 0xfA15525D777b5dDf558B3C414f2F3042119eb370 
-Successfully submitted source code for contract
-src/bridge/Bridge.sol:Bridge at 0xfA15525D777b5dDf558B3C414f2F3042119eb370
-for verification on the block explorer. Waiting for verification result...
+# Current implementation
 
-Successfully verified contract Bridge on the block explorer.
-https://sepolia.arbiscan.io/address/0xfA15525D777b5dDf558B3C414f2F3042119eb370#code
+Deployed contracts available in `nitro-contracts/espresso-deployments/arbSepolia.json`
 
-Verified contract Bridge successfully.
-* New SequencerInbox created at address: 0x2f533415649D317de8F63da8140998941FA113F9 117964 0x0000000000000000000000000000000000000000 false
-Successfully submitted source code for contract
-src/bridge/SequencerInbox.sol:SequencerInbox at 0x2f533415649D317de8F63da8140998941FA113F9
-for verification on the block explorer. Waiting for verification result...
+```json
+{
+  "EthBridge": "0xad3DEDd73840B4cEcfA1DaFD434DB5437aAA55C4",
+  "EthSequencerInbox": "0x62A60C2d82A5Ba5Efc02956a746f290De9226058",
+  "EthInbox": "0xEFd7AfF02ef982771C1d7655A9151a675bB08920",
+  "EthRollupEventInbox": "0x4a8b93686983fF380b0c11a1aF2448b142F38664",
+  "EthOutbox": "0x783d8eE69a37b909Bf5fd988D8bba8C7F99A5a66",
+  "ERC20Bridge": "0x0c25c1bF545F634d7b6F215D71995c504F53b9f8",
+  "ERC20SequencerInbox": "0x083c2fe2233c33FA307710D9A31073b4A8adf04E",
+  "ERC20Inbox": "0x4cD3d5f513294c2545cd7DD410d58748B8175E56",
+  "ERC20RollupEventInbox": "0xe7Ef506bC1Ae5aE7fe66e5E9C6D3251651490c64",
+  "ERC20Outbox": "0x32aBe1548B8BD7f2C0Ce56B01df17D2b59E6a698",
+  "BridgeCreator": "0xad3DEDd73840B4cEcfA1DaFD434DB5437aAA55C4",
+  "OneStepProver0": "0x9BC6Ae919D8d40f0a4148342FA3B38d6B08DFea9",
+  "OneStepProverMemory": "0xd8027189B57F6eCC7EbB2235C056437f752c4FdF",
+  "OneStepProverMath": "0xfd59e32c0b07151AB2269834fD4976Aa4D08781b",
+  "OneStepProverHostIo": "0x9e3bdcdB7C6d02517044D2136533db486928537b",
+  "OneStepProofEntry": "0xb375fAcCfc8eaB0F3f0A5F82f564fADA1E02BFa4",
+  "ChallengeManager": "0x73dA955491ab7f30886D8883Ce569352A9d96819",
+  "RollupAdminLogic": "0x7cA6eA2505255C7Bd05DffF2fc4524074c277F75",
+  "RollupUserLogic": "0xbf2Fe04D97D5D1EB12e51F835baF1F11A34e4762",
+  "UpgradeExecutor": "0x61153F3C05a139d95eCb601A91FAcdd25175517E",
+  "ValidatorUtils": "0xDcC0e65A0C8E9C9521f6E9eC3614963e4BD26F57",
+  "ValidatorWalletCreator": "0x0e55bE49D3FEF17CFC1D791731Fd608A9499C8CF",
+  "RollupCreator": "0x6e35a812cFb342b72c1265b305388baC0B295274",
+  "DeployHelper": "0xA5773DBD294BAdB81C8EFBf6Dda84479bBBe5D43"
+}
+```
 
-Successfully verified contract SequencerInbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x2f533415649D317de8F63da8140998941FA113F9#code
+Current `.env`
 
-Verified contract SequencerInbox successfully.
-* New Inbox created at address: 0xD79DE405000DcE426627fA40cA648Eb5291eE628 117964
-Successfully submitted source code for contract
-src/bridge/Inbox.sol:Inbox at 0xD79DE405000DcE426627fA40cA648Eb5291eE628
-for verification on the block explorer. Waiting for verification result...
+```js
+ARBISCAN_API_KEY="FI22AY4KC6U5JCUNZYCFPV8PB698789RNU"
+DEVNET_PRIVKEY="CONTRACT_DEPLOYER_PRIVATE_KEY"
+ESPRESSO_TEE_VERIFIER_ADDRESS="0x8354db765810dF8F24f1477B06e91E5b17a408bF"
+ROLLUP_CREATOR_ADDRESS="0x6e35a812cFb342b72c1265b305388baC0B295274"
+```
 
-Successfully verified contract Inbox on the block explorer.
-https://sepolia.arbiscan.io/address/0xD79DE405000DcE426627fA40cA648Eb5291eE628#code
+Returned via CLI on hardhat deployment
 
-Verified contract Inbox successfully.
-* New RollupEventInbox created at address: 0x58BD29E680A0D5bCCbd661882764746b2AFcece5 
-Successfully submitted source code for contract
-src/rollup/RollupEventInbox.sol:RollupEventInbox at 0x58BD29E680A0D5bCCbd661882764746b2AFcece5
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract RollupEventInbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x58BD29E680A0D5bCCbd661882764746b2AFcece5#code
-
-Verified contract RollupEventInbox successfully.
-* New Outbox created at address: 0x5D3ec8b6E106a020e31E8288290c69C0116021dB 
-Successfully submitted source code for contract
-src/bridge/Outbox.sol:Outbox at 0x5D3ec8b6E106a020e31E8288290c69C0116021dB
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract Outbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x5D3ec8b6E106a020e31E8288290c69C0116021dB#code
-
-Verified contract Outbox successfully.
-* New ERC20Bridge created at address: 0x63Ad3CF5f4Bfe136323D04c860a8fDD8558432BF 
-Successfully submitted source code for contract
-src/bridge/ERC20Bridge.sol:ERC20Bridge at 0x63Ad3CF5f4Bfe136323D04c860a8fDD8558432BF
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract ERC20Bridge on the block explorer.
-https://sepolia.arbiscan.io/address/0x63Ad3CF5f4Bfe136323D04c860a8fDD8558432BF#code
-
-Verified contract ERC20Bridge successfully.
-* New SequencerInbox created at address: 0x12990578986E8Ece7A59Bc6e353f97eE708a3b61 117964 0x0000000000000000000000000000000000000000 true
-Successfully submitted source code for contract
-src/bridge/SequencerInbox.sol:SequencerInbox at 0x12990578986E8Ece7A59Bc6e353f97eE708a3b61
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract SequencerInbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x12990578986E8Ece7A59Bc6e353f97eE708a3b61#code
-
-Verified contract SequencerInbox successfully.
-* New ERC20Inbox created at address: 0x719f3F67641743520257F9eD84f2b2784106cD4F 117964
-Successfully submitted source code for contract
-src/bridge/ERC20Inbox.sol:ERC20Inbox at 0x719f3F67641743520257F9eD84f2b2784106cD4F
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract ERC20Inbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x719f3F67641743520257F9eD84f2b2784106cD4F#code
-
-Verified contract ERC20Inbox successfully.
-* New ERC20RollupEventInbox created at address: 0xe1A1CFc4fAb40BFfc8E9372cBc8056F90D11F122 
-Successfully submitted source code for contract
-src/rollup/ERC20RollupEventInbox.sol:ERC20RollupEventInbox at 0xe1A1CFc4fAb40BFfc8E9372cBc8056F90D11F122
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract ERC20RollupEventInbox on the block explorer.
-https://sepolia.arbiscan.io/address/0xe1A1CFc4fAb40BFfc8E9372cBc8056F90D11F122#code
-
-Verified contract ERC20RollupEventInbox successfully.
-* New ERC20Outbox created at address: 0x7e228F81496d7875a4c892949CA3CC27e85eF315 
-Successfully submitted source code for contract
-src/bridge/ERC20Outbox.sol:ERC20Outbox at 0x7e228F81496d7875a4c892949CA3CC27e85eF315
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract ERC20Outbox on the block explorer.
-https://sepolia.arbiscan.io/address/0x7e228F81496d7875a4c892949CA3CC27e85eF315#code
-
-Verified contract ERC20Outbox successfully.
-* New BridgeCreator created at address: 0xbbF7D272BE2220631A66B703310Fb92f17581D4a 0xfA15525D777b5dDf558B3C414f2F3042119eb370,0x2f533415649D317de8F63da8140998941FA113F9,0xD79DE405000DcE426627fA40cA648Eb5291eE628,0x58BD29E680A0D5bCCbd661882764746b2AFcece5,0x5D3ec8b6E106a020e31E8288290c69C0116021dB 0x63Ad3CF5f4Bfe136323D04c860a8fDD8558432BF,0x12990578986E8Ece7A59Bc6e353f97eE708a3b61,0x719f3F67641743520257F9eD84f2b2784106cD4F,0xe1A1CFc4fAb40BFfc8E9372cBc8056F90D11F122,0x7e228F81496d7875a4c892949CA3CC27e85eF315
-Verification for BridgeCreator failed with the following error: A network request failed. This is an error from the block explorer, not Hardhat. Error: read ECONNRESET
-network block skew detected; skipping block events (emitted=135382291 blockNumber135384713)
-* New OneStepProver0 created at address: 0x11A7372Da1F505a4Fc665BeE11A14717C49CbAE8 
-Successfully submitted source code for contract
-src/osp/OneStepProver0.sol:OneStepProver0 at 0x11A7372Da1F505a4Fc665BeE11A14717C49CbAE8
-for verification on the block explorer. Waiting for verification result...
-
-Contract OneStepProver0 is already verified.
-* New OneStepProverMemory created at address: 0x9e739F71dA093E255359ACd6b258471779ed16Bc 
-Successfully submitted source code for contract
-src/osp/OneStepProverMemory.sol:OneStepProverMemory at 0x9e739F71dA093E255359ACd6b258471779ed16Bc
-for verification on the block explorer. Waiting for verification result...
-
-Contract OneStepProverMemory is already verified.
-* New OneStepProverMath created at address: 0xeC84332d1Bbf7d353081eBbF28c6B3eCDC93FE5D 
-Successfully submitted source code for contract
-src/osp/OneStepProverMath.sol:OneStepProverMath at 0xeC84332d1Bbf7d353081eBbF28c6B3eCDC93FE5D
-for verification on the block explorer. Waiting for verification result...
-
-Contract OneStepProverMath is already verified.
-* New OneStepProverHostIo created at address: 0x8026f95Fc46d2f7712455AA2d9d324be05CC440D 
-Successfully submitted source code for contract
-src/osp/OneStepProverHostIo.sol:OneStepProverHostIo at 0x8026f95Fc46d2f7712455AA2d9d324be05CC440D
-for verification on the block explorer. Waiting for verification result...
-
-Contract OneStepProverHostIo is already verified.
-* New OneStepProofEntry created at address: 0xF00822f86DdD72A7C753fF1F56f907D543479aE3 0x11A7372Da1F505a4Fc665BeE11A14717C49CbAE8 0x9e739F71dA093E255359ACd6b258471779ed16Bc 0xeC84332d1Bbf7d353081eBbF28c6B3eCDC93FE5D 0x8026f95Fc46d2f7712455AA2d9d324be05CC440D
-Successfully submitted source code for contract
-src/osp/OneStepProofEntry.sol:OneStepProofEntry at 0xF00822f86DdD72A7C753fF1F56f907D543479aE3
-for verification on the block explorer. Waiting for verification result...
-
-Contract OneStepProofEntry is already verified.
-* New ChallengeManager created at address: 0x7e6071A26CEA55ad19E79d471BAA5b8696da457c 
-Verification for ChallengeManager failed with the following error: More than one contract was found to match the deployed bytecode.
-Please use the contract parameter with one of the following contracts:
-  * src/challenge/ChallengeManager.sol:ChallengeManager
-  * src/mocks/SingleExecutionChallenge.sol:SingleExecutionChallenge
-
-For example:
-
-hardhat verify --contract contracts/Example.sol:ExampleContract <other args>
-
-If you are running the verify subtask from within Hardhat instead:
-
-await run("verify:verify", {
-<other args>,
-contract: "contracts/Example.sol:ExampleContract"
-};
-* New RollupAdminLogic created at address: 0xd16acA0BDdaD70eFC4C010f70d61Ee2C30851A1B 
-Successfully submitted source code for contract
-src/rollup/RollupAdminLogic.sol:RollupAdminLogic at 0xd16acA0BDdaD70eFC4C010f70d61Ee2C30851A1B
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract RollupAdminLogic on the block explorer.
-https://sepolia.arbiscan.io/address/0xd16acA0BDdaD70eFC4C010f70d61Ee2C30851A1B#code
-
-Verified contract RollupAdminLogic successfully.
-* New RollupUserLogic created at address: 0xce7AF2F4F60E008be1A4064Ef559FDBC7B83106A 
-Successfully submitted source code for contract
-src/rollup/RollupUserLogic.sol:RollupUserLogic at 0xce7AF2F4F60E008be1A4064Ef559FDBC7B83106A
-for verification on the block explorer. Waiting for verification result...
-
-Successfully verified contract RollupUserLogic on the block explorer.
-https://sepolia.arbiscan.io/address/0xce7AF2F4F60E008be1A4064Ef559FDBC7B83106A#code
-
-Verified contract RollupUserLogic successfully.
-* New ValidatorUtils created at address: 0x8f0D0B2D5b77ABF02742f8128289e3dCCD5DF019 
-Successfully submitted source code for contract
-src/rollup/ValidatorUtils.sol:ValidatorUtils at 0x8f0D0B2D5b77ABF02742f8128289e3dCCD5DF019
-for verification on the block explorer. Waiting for verification result...
-
-Contract ValidatorUtils is already verified.
-* New ValidatorWalletCreator created at address: 0x8bb7f64cfa03A9f24172F13dBd5aD5653D78E21e 
-Successfully submitted source code for contract
-src/rollup/ValidatorWalletCreator.sol:ValidatorWalletCreator at 0x8bb7f64cfa03A9f24172F13dBd5aD5653D78E21e
-for verification on the block explorer. Waiting for verification result...
-
-Contract ValidatorWalletCreator is already verified.
-* New RollupCreator created at address: 0xEb7841fd1977B1D1C94779187Bf20B33891EC3d7 
-Successfully submitted source code for contract
-src/rollup/RollupCreator.sol:RollupCreator at 0xEb7841fd1977B1D1C94779187Bf20B33891EC3d7
-for verification on the block explorer. Waiting for verification result...
-
-Contract RollupCreator is already verified.
-* New DeployHelper created at address: 0xcA4DfAC1983A2C807381FcD86c6E096F35e8e1f5 
-Successfully submitted source code for contract
-src/rollup/DeployHelper.sol:DeployHelper at 0xcA4DfAC1983A2C807381FcD86c6E096F35e8e1f5
-for verification on the block explorer. Waiting for verification result...
-
-Contract DeployHelper is already verified.
-* New RollupProxy created at address: 0x3B737a9df9F4B48eB964047f352206efc2573C6E 
-Successfully submitted source code for contract
-src/rollup/RollupProxy.sol:RollupProxy at 0x3B737a9df9F4B48eB964047f352206efc2573C6E
-for verification on the block explorer. Waiting for verification result...
-
-Contract RollupProxy is already verified.
-Contract addresses are saved in the deployments folder
-Waiting for the Template to be set on the Rollup Creator
-Template is set on the Rollup Creator
-maharajababu nitro-contracts % 
-
-
-
-
-npx hardhat run scripts/createEthRollup.ts --network arbSepolia
-Calling createRollup to generate a new rollup ...
+```markdown
 Congratulations! 🎉🎉🎉 All DONE! Here's your addresses:
-RollupProxy Contract created at address: 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7
-Wait a minute before starting the contract verification
-Attempting to verify Rollup contract at address 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7...
-Successfully submitted source code for contract
-src/rollup/RollupProxy.sol:RollupProxy at 0x11D3f25d6B5B21Bd5a3bbB6E61DB2F3bd82970D7
-for verification on the block explorer. Waiting for verification result...
+RollupProxy Contract created at address: `0x7A6074218a171e57d1198386f9500EC9b0f1e684`
+Attempting to verify Rollup contract at address `0x7A6074218a171e57d1198386f9500EC9b0f1e684`
+src/rollup/RollupProxy.sol:RollupProxy at `0x7A6074218a171e57d1198386f9500EC9b0f1e684`
 
 Contract RollupProxy is already verified.
-Inbox (proxy) Contract created at address: 0xb1264fCe5a3fc1De7Ca0679aF510b2c0Abd48859
-Outbox (proxy) Contract created at address: 0x78e43E0c3669A8C05eB306043CeE6aAEFb357b55
-rollupEventInbox (proxy) Contract created at address: 0xcc2204a5b669930c36B4412863d21084EE9827b5
-challengeManager (proxy) Contract created at address: 0xB1346A84D36B2D75783e0Fd39EE058fBe7CC0CD3
-AdminProxy Contract created at address: 0x3832b96efA351FBA4A189D228a21Dd8f7C74c3cE
-SequencerInbox (proxy) created at address: 0xa2c79BdB61D127260eC18DdA980CeFE5c2941eE7
-Bridge (proxy) Contract created at address: 0xbBF241C332Bd5b319abDb4dDCBA83e4E65358539
-ValidatorUtils Contract created at address: 0x8f0D0B2D5b77ABF02742f8128289e3dCCD5DF019
-ValidatorWalletCreator Contract created at address: 0x8bb7f64cfa03A9f24172F13dBd5aD5653D78E21e
-All deployed at block number: 135396789
+Inbox (proxy) Contract created at address: `0xffC822D13e3743fff3fAFE9FC49eC82d6FF9269C`
+Outbox (proxy) Contract created at address: `0x00603B7D7B010289C38B42645Aaca34AB2D429C7`
+rollupEventInbox (proxy) Contract created at address: `0x340CF68F829d3a4B85958860AB36751c124592f1`
+challengeManager (proxy) Contract created at address: `0xA5996Cd20C3D6B1D947Bec3E6908B35f35A43592`
+AdminProxy Contract created at address: `0xA917cAdF349ca58621f9499A7f7281532C9108a8`
+SequencerInbox (proxy) created at address: `0x09Af9f124E6597Fd6507fd37759E9Cd7795CCAd3`
+Bridge (proxy) Contract created at address: `0xf2061896724Da22e583C1918b3d1054035157a08`
+ValidatorUtils Contract created at address: `0xDcC0e65A0C8E9C9521f6E9eC3614963e4BD26F57`
+ValidatorWalletCreator Contract created at address: `0x0e55bE49D3FEF17CFC1D791731Fd608A9499C8CF`
+All deployed at block number: 136646779
+```
+
+## Testing the Chain
+
+### To verify your chain is running correctly:
+
+#### Check Confirmed Nodes by the Validator/Staker
+
+```bash
+cast call --rpc-url https://arbitrum-sepolia-rpc.publicnode.com 0x7A6074218a171e57d1198386f9500EC9b0f1e684 "latestConfirmed()(uint256)"
+```
+
+#### Test bridge functionality:
+
+```bash
+cast send --rpc-url https://arbitrum-sepolia-rpc.publicnode.com 0xffC822D13e3743fff3fAFE9FC49eC82d6FF9269C 'depositEth() external payable returns (uint256)' --private-key YOUR_PRIVATE_KEY_WITH_FUNDS  --value 100000000 -vvvv
+```
+
+Note: Bridging transactions can take up to 15 minutes to finalize.
+
+#### Verify your balance:
+
+```bash
+cast balance 0x1a85310597135633BAe67106f5859Ae3FF7D13cE --rpc-url http://127.0.0.1:8547
+```
+
+Test sending transactions:
+
+```bash
+cast send ANY_ADDRESS --value 1 --private-key YOUR_PRIVATE_KEY_WITH_FUNDS --rpc-url http://127.0.0.1:8547
+```
+
+For a more consistent test, you can also continuously send transactions to the rollup. This approach simulates a more realistic environment by continually submitting transactions, allowing you to see how the system handles ongoing activity. (See the next section for details.)
+
+#### Check recipient balance:
+
+```bash
+cast balance ANY_ADDRESS --rpc-url http://127.0.0.1:8547
+```
+
+If successful, the recipient's balance should show 1 wei or the amount you sent if different.
+
+### Transaction Flow Generator
+
+If you want to generate test transactions on your rollup, navigate to the tx-generator repository subfolder and follow the README instructions:
+
+```bash
+cd tx-generator
+```
+
+This script continuously generates transactions to help you evaluate your rollup and the Espresso Network.

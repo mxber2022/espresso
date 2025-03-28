@@ -12,16 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-
-use alloy_primitives::{b256, keccak256, map::B256HashMap, B256};
-use alloy_rlp::{BufMut, Decodable, Encodable, Header, PayloadView, EMPTY_STRING_CODE};
+use alloy_primitives::{b256, keccak256, B256};
+use alloy_rlp::{BufMut, Decodable, Encodable, Header, EMPTY_STRING_CODE};
 use nybbles::Nibbles;
+use revm::primitives::HashMap;
+use rlp as legacy_rlp;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use thiserror::Error as ThisError;
 
 /// Root hash of an empty Merkle Patricia trie, i.e. `keccak256(RLP(""))`.
 pub const EMPTY_ROOT_HASH: B256 =
     b256!("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+
+/// The error type that is returned when parsing a [MerkleTrie] node.
+#[derive(Debug, ThisError)]
+pub enum ParseNodeError {
+    /// Error that occurs when parsing the RLP encoding of a node.
+    #[error("RLP error")]
+    Rlp(#[from] legacy_rlp::DecoderError),
+}
 
 /// A sparse Merkle Patricia trie storing byte values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +53,7 @@ impl MerkleTrie {
     #[inline]
     pub fn get_rlp<T: Decodable>(&self, key: impl AsRef<[u8]>) -> alloy_rlp::Result<Option<T>> {
         match self.get(key) {
-            Some(bytes) => Ok(Some(alloy_rlp::decode_exact(bytes)?)),
+            Some(mut bytes) => Ok(Some(T::decode(&mut bytes)?)),
             None => Ok(None),
         }
     }
@@ -75,8 +85,8 @@ impl MerkleTrie {
     /// that the root hash can be computed and matches the root hash of the fully resolved trie.
     pub fn from_rlp_nodes<T: AsRef<[u8]>>(
         nodes: impl IntoIterator<Item = T>,
-    ) -> alloy_rlp::Result<Self> {
-        let mut nodes_by_hash = B256HashMap::default();
+    ) -> Result<Self, ParseNodeError> {
+        let mut nodes_by_hash = HashMap::new();
         let mut root_node_opt = None;
 
         for rlp in nodes {
@@ -126,7 +136,7 @@ impl Node {
                     .and_then(|node| node.get(remaining)),
                 None => None, // branch nodes don't have values in our MPT version
             },
-            Node::Digest(_) => panic!("MPT: Unresolved node access"),
+            Node::Digest(_) => panic!("Attempted to access unresolved node"),
         }
     }
 
@@ -153,7 +163,7 @@ impl Node {
             Node::Null => vec![EMPTY_STRING_CODE],
             Node::Leaf(prefix, value) => {
                 let path = prefix.encode_path_leaf(true);
-                let mut out = encode_list_header(path.length() + value.length());
+                let mut out = encoded_header(true, path.length() + value.length());
                 path.encode(&mut out);
                 value.encode(&mut out);
 
@@ -162,7 +172,7 @@ impl Node {
             Node::Extension(prefix, child) => {
                 let path = prefix.encode_path_leaf(false);
                 let node_ref = NodeRef::from_node(child);
-                let mut out = encode_list_header(path.length() + node_ref.length());
+                let mut out = encoded_header(true, path.length() + node_ref.length());
                 path.encode(&mut out);
                 node_ref.encode(&mut out);
 
@@ -183,7 +193,7 @@ impl Node {
                     }
                 }
 
-                let mut out = encode_list_header(payload_length);
+                let mut out = encoded_header(true, payload_length);
                 child_refs.iter().for_each(|child| child.encode(&mut out));
                 // add an EMPTY_STRING_CODE for the missing value
                 out.push(EMPTY_STRING_CODE);
@@ -195,48 +205,46 @@ impl Node {
     }
 }
 
-impl Decodable for Node {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        match Header::decode_raw(buf)? {
-            // if the node is not a list, it must be empty or a digest
-            PayloadView::String(payload) => match payload.len() {
-                0 => Ok(Node::Null),
-                32 => Ok(Node::Digest(B256::from_slice(payload))),
-                _ => Err(alloy_rlp::Error::UnexpectedLength),
-            },
-            PayloadView::List(mut items) => match items.len() {
-                // branch node: 17-item node [ v0 ... v15, value ]
-                17 => {
-                    let mut children: [Option<Box<Node>>; 16] = Default::default();
-                    for (i, node_rlp) in items.into_iter().enumerate() {
-                        if node_rlp != [EMPTY_STRING_CODE] {
-                            if i == 16 {
-                                return Err(alloy_rlp::Error::Custom("branch node with value"));
-                            } else {
-                                children[i] = Some(Box::new(alloy_rlp::decode_exact(node_rlp)?));
-                            }
-                        }
-                    }
+impl legacy_rlp::Decodable for Node {
+    fn decode(rlp: &legacy_rlp::Rlp) -> Result<Self, legacy_rlp::DecoderError> {
+        use legacy_rlp::{Decodable, DecoderError, Prototype};
 
-                    Ok(Node::Branch(children))
+        match rlp.prototype()? {
+            Prototype::Null | Prototype::Data(0) => Ok(Node::Null),
+            Prototype::List(2) => {
+                let (path, is_leaf) = decode_path(rlp.val_at::<Vec<u8>>(0)?);
+                if is_leaf {
+                    let val = rlp.val_at::<Vec<u8>>(1)?;
+                    Ok(Node::Leaf(path, val.into_boxed_slice()))
+                } else {
+                    let node = Decodable::decode(&rlp.at(1)?)?;
+                    if node == Node::Null {
+                        return Err(DecoderError::Custom("extension node with null child"));
+                    }
+                    Ok(Node::Extension(path, Box::new(node)))
                 }
-                // leaf or extension node: 2-item node [ encodedPath, v ]
-                // they are distinguished by a flag in the first nibble of the encodedPath
-                2 => {
-                    let (path, is_leaf) = decode_path(&mut items[0])?;
-                    if is_leaf {
-                        let value = Header::decode_bytes(&mut items[1], false)?;
-                        Ok(Node::Leaf(path, value.into()))
-                    } else {
-                        let node = alloy_rlp::decode_exact(items[1])?;
-                        if node == Node::Null {
-                            return Err(alloy_rlp::Error::Custom("extension node with null child"));
-                        }
-                        Ok(Node::Extension(path, Box::new(node)))
+            }
+            Prototype::List(17) => {
+                let mut children: [Option<Box<Node>>; 16] = Default::default();
+                for (i, node_rlp) in rlp.iter().enumerate().take(16) {
+                    match node_rlp.prototype()? {
+                        Prototype::Null | Prototype::Data(0) => {}
+                        _ => children[i] = Some(Box::new(Decodable::decode(&node_rlp)?)),
                     }
                 }
-                _ => Err(alloy_rlp::Error::Custom("unexpected list length")),
-            },
+                // verify that there is no 17th element with a value
+                if !rlp.at(16)?.is_empty() {
+                    return Err(DecoderError::Custom("branch node with value"));
+                }
+
+                Ok(Node::Branch(children))
+            }
+            Prototype::Data(32) => {
+                let digest = B256::decode(&mut rlp.as_raw())
+                    .map_err(|_| DecoderError::Custom("invalid digest"))?;
+                Ok(Node::Digest(digest))
+            }
+            _ => Err(DecoderError::RlpIncorrectListLen),
         }
     }
 }
@@ -296,10 +304,10 @@ impl Encodable for NodeRef<'_> {
 }
 
 #[inline]
-fn encode_list_header(payload_length: usize) -> Vec<u8> {
+fn encoded_header(list: bool, payload_length: usize) -> Vec<u8> {
     debug_assert!(payload_length > 0);
     let header = Header {
-        list: true,
+        list,
         payload_length,
     };
     let mut out = Vec::with_capacity(header.length() + payload_length);
@@ -307,32 +315,15 @@ fn encode_list_header(payload_length: usize) -> Vec<u8> {
     out
 }
 
-fn decode_path(buf: &mut &[u8]) -> alloy_rlp::Result<(Nibbles, bool)> {
-    let path = Nibbles::unpack(Header::decode_bytes(buf, false)?);
-    if path.len() < 2 {
-        return Err(alloy_rlp::Error::InputTooShort);
-    }
-    let (is_leaf, odd_nibbles) = match path[0] {
-        0b0000 => (false, false),
-        0b0001 => (false, true),
-        0b0010 => (true, false),
-        0b0011 => (true, true),
-        _ => return Err(alloy_rlp::Error::Custom("node is not extension or leaf")),
-    };
-    let prefix = if odd_nibbles { &path[1..] } else { &path[2..] };
-    Ok((Nibbles::from_nibbles_unchecked(prefix), is_leaf))
-}
-
 /// Returns the decoded node and its RLP hash.
-fn parse_node(rlp: impl AsRef<[u8]>) -> alloy_rlp::Result<(Option<B256>, Node)> {
+fn parse_node(rlp: impl AsRef<[u8]>) -> Result<(Option<B256>, Node), ParseNodeError> {
     let rlp = rlp.as_ref();
-    let node = alloy_rlp::decode_exact(rlp)?;
-
+    let node = legacy_rlp::decode(rlp)?;
     // the hash is only needed for RLP length >= 32
     Ok(((rlp.len() >= 32).then(|| keccak256(rlp)), node))
 }
 
-fn resolve_trie(root: Node, nodes_by_hash: &B256HashMap<Node>) -> Node {
+fn resolve_trie(root: Node, nodes_by_hash: &HashMap<B256, Node>) -> Node {
     match root {
         Node::Null | Node::Leaf(..) => root,
         Node::Extension(prefix, child) => {
@@ -354,39 +345,45 @@ fn resolve_trie(root: Node, nodes_by_hash: &B256HashMap<Node>) -> Node {
     }
 }
 
+#[inline]
+fn decode_path(path: impl AsRef<[u8]>) -> (Nibbles, bool) {
+    let path = Nibbles::unpack(path);
+    assert!(path.len() >= 2);
+    let is_leaf = path[0] & 2 != 0;
+    let odd_nibbles = path[0] & 1 != 0;
+
+    let prefix = if odd_nibbles { &path[1..] } else { &path[2..] };
+    (Nibbles::from_nibbles_unchecked(prefix), is_leaf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::StateAccount;
+    use crate::StateAccount;
     use alloy_primitives::{address, uint, Bytes, U256};
     use alloy_trie::HashBuilder;
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    fn rlp_nodes(trie: &MerkleTrie) -> Vec<Vec<u8>> {
-        fn rec(root: &Node) -> Vec<Vec<u8>> {
-            let mut out = vec![root.rlp_encoded()];
-            match root {
-                Node::Null | Node::Leaf(_, _) | Node::Digest(_) => {}
-                Node::Extension(_, child) => out.extend(rec(child)),
-                Node::Branch(children) => {
-                    out.extend(children.iter().flatten().flat_map(|c| rec(c)));
-                }
-            };
-            out
-        }
-        rec(&trie.0)
-    }
-
-    #[test]
-    pub fn empty_root_hash() {
-        assert_eq!(EMPTY_ROOT_HASH, keccak256(Node::Null.rlp_encoded()));
+    fn rlp_encoded(root: &Node) -> Vec<Vec<u8>> {
+        let mut out = vec![root.rlp_encoded()];
+        match root {
+            Node::Null | Node::Leaf(_, _) | Node::Digest(_) => {}
+            Node::Extension(_, child) => out.extend(rlp_encoded(child)),
+            Node::Branch(children) => {
+                out.extend(children.iter().flatten().flat_map(|c| rlp_encoded(c)));
+            }
+        };
+        out
     }
 
     #[test]
     pub fn mpt_null() {
         let mpt = MerkleTrie(Node::Null);
-        assert_eq!(mpt, MerkleTrie::from_rlp_nodes(rlp_nodes(&mpt)).unwrap());
+        assert_eq!(
+            mpt,
+            MerkleTrie::from_rlp_nodes(rlp_encoded(&mpt.0)).unwrap()
+        );
 
         assert_eq!(mpt.hash_slow(), EMPTY_ROOT_HASH);
         assert_eq!(mpt.size(), 0);
@@ -400,7 +397,10 @@ mod tests {
     #[test]
     pub fn mpt_digest() {
         let mpt = MerkleTrie(Node::Digest(B256::ZERO));
-        assert_eq!(mpt, MerkleTrie::from_rlp_nodes(rlp_nodes(&mpt)).unwrap());
+        assert_eq!(
+            mpt,
+            MerkleTrie::from_rlp_nodes(rlp_encoded(&mpt.0)).unwrap()
+        );
 
         assert_eq!(mpt.hash_slow(), B256::ZERO);
         assert_eq!(mpt.size(), 0);
@@ -409,7 +409,10 @@ mod tests {
     #[test]
     pub fn mpt_leaf() {
         let mpt = MerkleTrie(Node::Leaf(Nibbles::unpack(B256::ZERO), vec![0].into()));
-        assert_eq!(mpt, MerkleTrie::from_rlp_nodes(rlp_nodes(&mpt)).unwrap());
+        assert_eq!(
+            mpt,
+            MerkleTrie::from_rlp_nodes(rlp_encoded(&mpt.0)).unwrap()
+        );
 
         assert_eq!(
             mpt.hash_slow(),
@@ -419,6 +422,31 @@ mod tests {
 
         // a single leave proves the inclusion of the key and non-inclusion of any other key
         assert_eq!(mpt.get(B256::ZERO), Some(&[0][..]));
+        assert_eq!(mpt.get([]), None);
+        assert_eq!(mpt.get([0]), None);
+        assert_eq!(mpt.get([1, 2, 3]), None);
+    }
+
+    #[test]
+    pub fn mpt_branch() {
+        let mut children: [Option<Box<Node>>; 16] = Default::default();
+        children[0] = Some(Box::new(Node::Leaf(
+            Nibbles::from_nibbles([0; 63]),
+            vec![0].into(),
+        )));
+        children[1] = Some(Box::new(Node::Leaf(
+            Nibbles::from_nibbles([1; 63]),
+            vec![1].into(),
+        )));
+        let mpt = MerkleTrie(Node::Branch(children));
+        assert_eq!(
+            mpt.hash_slow(),
+            b256!("f09860d0bbaa3a755a53bbeb7b06824cdda5ac2ee5557d14aa49117a47bd0a3e")
+        );
+        assert_eq!(mpt.size(), 3);
+
+        assert_eq!(mpt.get(B256::repeat_byte(0x00)), Some(&[0][..]));
+        assert_eq!(mpt.get(B256::repeat_byte(0x11)), Some(&[1][..]));
         assert_eq!(mpt.get([]), None);
         assert_eq!(mpt.get([0]), None);
         assert_eq!(mpt.get([1, 2, 3]), None);
@@ -440,8 +468,6 @@ mod tests {
             Nibbles::from_nibbles([0; 1]),
             branch.into(),
         ));
-        assert_eq!(mpt, MerkleTrie::from_rlp_nodes(rlp_nodes(&mpt)).unwrap());
-
         assert_eq!(
             mpt.hash_slow(),
             b256!("97aa4d930926792c6c5a716223c01dad6b64ce11ac261665d6f2fa031570ad26")
@@ -462,61 +488,10 @@ mod tests {
     }
 
     #[test]
-    pub fn mpt_branch() {
-        let mut children: [Option<Box<Node>>; 16] = Default::default();
-        children[0] = Some(Box::new(Node::Leaf(
-            Nibbles::from_nibbles([0; 63]),
-            vec![0].into(),
-        )));
-        children[1] = Some(Box::new(Node::Leaf(
-            Nibbles::from_nibbles([1; 63]),
-            vec![1].into(),
-        )));
-        let mpt = MerkleTrie(Node::Branch(children));
-        assert_eq!(mpt, MerkleTrie::from_rlp_nodes(rlp_nodes(&mpt)).unwrap());
-
-        assert_eq!(
-            mpt.hash_slow(),
-            b256!("f09860d0bbaa3a755a53bbeb7b06824cdda5ac2ee5557d14aa49117a47bd0a3e")
-        );
-        assert_eq!(mpt.size(), 3);
-
-        assert_eq!(mpt.get(B256::repeat_byte(0x00)), Some(&[0][..]));
-        assert_eq!(mpt.get(B256::repeat_byte(0x11)), Some(&[1][..]));
-        assert_eq!(mpt.get([]), None);
-        assert_eq!(mpt.get([0]), None);
-        assert_eq!(mpt.get([1, 2, 3]), None);
-    }
-
-    #[test]
     #[should_panic]
     pub fn get_digest() {
         let mpt = MerkleTrie(Node::Digest(B256::ZERO));
         mpt.get([]);
-    }
-
-    #[test]
-    pub fn mpt_short() {
-        // 4 leaves with 1-byte long keys, the resulting root node should be shorter than 32 bytes
-        let leaves: BTreeMap<_, _> = (0..4u8).map(|i| (Nibbles::unpack([i]), vec![0])).collect();
-
-        // construct the root hash and inclusion proofs for all leaves
-        let proof_keys = leaves.keys().cloned().collect();
-        let mut hasher = HashBuilder::default().with_proof_retainer(proof_keys);
-        leaves.into_iter().for_each(|(k, v)| hasher.add_leaf(k, &v));
-        let exp_hash = hasher.root();
-
-        // reconstruct the trie from the RLP encoded proofs and verify the root hash
-        let mpt = MerkleTrie::from_rlp_nodes(
-            hasher
-                .take_proof_nodes()
-                .into_nodes_sorted()
-                .into_iter()
-                .map(|node| node.1),
-        )
-        .unwrap();
-        assert!(mpt.0.rlp_encoded().len() < 32);
-        assert_eq!(mpt.hash_slow(), exp_hash);
     }
 
     #[test]
@@ -536,20 +511,17 @@ mod tests {
 
         // generate proofs only for every second leaf
         let proof_keys = leaves.keys().step_by(2).cloned().collect();
-        let mut hasher = HashBuilder::default().with_proof_retainer(proof_keys);
-        leaves.into_iter().for_each(|(k, v)| hasher.add_leaf(k, &v));
-        let exp_hash = hasher.root();
+        let mut hash_builder = HashBuilder::default().with_proof_retainer(proof_keys);
+        for (key, value) in leaves {
+            hash_builder.add_leaf(key, &value);
+        }
+        let root = hash_builder.root();
+        let proofs = hash_builder.take_proofs();
 
         // reconstruct the trie from the RLP encoded proofs and verify the root hash
-        let mpt = MerkleTrie::from_rlp_nodes(
-            hasher
-                .take_proof_nodes()
-                .into_nodes_sorted()
-                .into_iter()
-                .map(|node| node.1),
-        )
-        .unwrap();
-        assert_eq!(mpt.hash_slow(), exp_hash);
+        let mpt = MerkleTrie::from_rlp_nodes(proofs.into_values())
+            .expect("Failed to reconstruct Merkle Trie from proofs");
+        assert_eq!(mpt.hash_slow(), root);
     }
 
     #[test]

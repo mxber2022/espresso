@@ -1,20 +1,45 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {FmspcTcbDao, PcsDao, DaoBase} from "../bases/FmspcTcbDao.sol";
 import {AutomataDaoBase} from "./shared/AutomataDaoBase.sol";
+import {FmspcTcbDao, FmspcTcbHelper, AttestationRequest, PcsDao} from "../bases/FmspcTcbDao.sol";
 
-contract AutomataFmspcTcbDao is AutomataDaoBase, FmspcTcbDao {
-    constructor(address _storage, address _p256, address _pcs, address _fmspcHelper, address _x509Helper)
-        FmspcTcbDao(_storage, _p256, _pcs, _fmspcHelper, _x509Helper)
-    {}
+import {Ownable} from "solady/auth/Ownable.sol";
 
-    function _onFetchDataFromResolver(bytes32 key, bool hash)
-        internal
-        view
-        override(AutomataDaoBase, DaoBase)
-        returns (bytes memory data)
+contract AutomataFmspcTcbDao is Ownable, AutomataDaoBase, FmspcTcbDao {
+    constructor(address _storage, address _pcs, address _fmspcHelper, address _x509Helper)
+        AutomataDaoBase(_storage)
+        FmspcTcbDao(_pcs, _fmspcHelper, _x509Helper)
     {
-        data = super._onFetchDataFromResolver(key, hash);
+        _initializeOwner(msg.sender);
+    }
+
+    function updateDeps(address _pcs, address _fmspcHelper, address _x509Helper) external onlyOwner {
+        Pcs = PcsDao(_pcs);
+        FmspcTcbLib = FmspcTcbHelper(_fmspcHelper);
+        x509 = _x509Helper;
+    }
+
+    function fmpscTcbV2SchemaID() public pure override returns (bytes32) {
+        // NOT-APPLICABLE FOR OUR USE CASE
+        // but this is required by most attestation services, such as EAS, Verax etc
+        return bytes32(0);
+    }
+
+    function fmpscTcbV3SchemaID() public pure override returns (bytes32) {
+        // NOT-APPLICABLE FOR OUR USE CASE
+        // but this is required by most attestation services, such as EAS, Verax etc
+        return bytes32(0);
+    }
+
+    function _attestTcb(AttestationRequest memory req, bytes32 hash)
+        internal
+        override
+        returns (bytes32 attestationId)
+    {
+        // delete the predecessor if replacing
+        _deletePredecessor(req.data.refUID);
+        _attestCollateral(hash, req.data.data);
+        attestationId = hash;
     }
 }

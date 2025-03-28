@@ -57,23 +57,6 @@ contract RiscZeroGroth16VerifierTest is Test {
         verifier = new RiscZeroGroth16Verifier(ControlID.CONTROL_ROOT, ControlID.BN254_CONTROL_ID);
     }
 
-    function testConsistentSystemStateZeroDigest() external pure {
-        require(
-            ReceiptClaimLib.SYSTEM_STATE_ZERO_DIGEST
-                == sha256(
-                    abi.encodePacked(
-                        SystemStateLib.TAG_DIGEST,
-                        // down
-                        bytes32(0),
-                        // data
-                        uint32(0),
-                        // down.length
-                        uint16(1) << 8
-                    )
-                )
-        );
-    }
-
     function testVerifyKnownGoodReceipt() external view {
         verifier.verifyIntegrity(TEST_RECEIPT);
     }
@@ -138,6 +121,6 @@ contract RiscZeroGroth16VerifierTest is Test {
     }
 
     function testSelectorIsStable() external view {
-        require(verifier.SELECTOR() == hex"c101b42b");
+        require(verifier.SELECTOR() == hex"310fe598");
     }
 }

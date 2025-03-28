@@ -12,30 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloy::sol_types::SolValue;
+use alloy_sol_types::SolValue;
 use anyhow::Result;
 use risc0_zkvm::{sha::Digestible, Groth16ReceiptVerifierParameters};
 
 /// ABI encoding of the seal.
-pub fn abi_encode(seal: impl AsRef<[u8]>) -> Result<Vec<u8>> {
+pub fn abi_encode(seal: Vec<u8>) -> Result<Vec<u8>> {
     Ok(encode(seal)?.abi_encode())
 }
 
-/// Encoding of a Groth16 seal by prefixing it with the verifier selector.
-///
-/// The verifier selector is determined from the first 4 bytes of the hash of the verifier
-/// parameters including the Groth16 verification key and the control IDs that commit to the RISC
-/// Zero circuits.
-///
-/// NOTE: Selector value of the current zkVM version is used. If you need to use a selector from a
-/// different version of the zkVM, use the [encode_seal] method instead.
-pub fn encode(seal: impl AsRef<[u8]>) -> Result<Vec<u8>> {
+/// encoding of the seal with selector.
+pub fn encode(seal: Vec<u8>) -> Result<Vec<u8>> {
     let verifier_parameters_digest = Groth16ReceiptVerifierParameters::default().digest();
     let selector = &verifier_parameters_digest.as_bytes()[..4];
     // Create a new vector with the capacity to hold both selector and seal
-    let mut selector_seal = Vec::with_capacity(selector.len() + seal.as_ref().len());
+    let mut selector_seal = Vec::with_capacity(selector.len() + seal.len());
     selector_seal.extend_from_slice(selector);
-    selector_seal.extend_from_slice(seal.as_ref());
+    selector_seal.extend_from_slice(&seal);
 
     Ok(selector_seal)
 }
@@ -43,6 +36,7 @@ pub fn encode(seal: impl AsRef<[u8]>) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
+    use ethers::utils::hex;
     use regex::Regex;
 
     use super::*;

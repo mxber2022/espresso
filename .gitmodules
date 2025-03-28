@@ -1,0 +1,3 @@
+[submodule "espresso-build-something-real"]
+	path = espresso-build-something-real
+	url = https://github.com/EspressoSystems/espresso-build-something-real
